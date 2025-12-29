@@ -34,6 +34,10 @@ class OtherFeatures(commands.Cog):
                     "└ Manage your state minister appointments\n"
                     "└ Schedule Construction, Research, Training days\n"
                     "└ Configure minister log channels\n\n"
+                    "📊 **Alliance Insights**\n"
+                    "└ Alliance dashboard + gift reliability checks\n"
+                    "└ Attendance trends + minister auto-fill\n"
+                    "└ Missing members reconciliation\n\n"
                     "💾 **Backup System**\n"
                     "└ Automatic database backup\n"
                     "└ Send backups to your DMs\n"
@@ -156,6 +160,30 @@ class OtherFeaturesView(discord.ui.View):
             print(f"Error loading Backup System menu: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while loading Backup System menu.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(
+        label="Alliance Insights",
+        emoji="📊",
+        style=discord.ButtonStyle.primary,
+        custom_id="elite_features",
+        row=2
+    )
+    async def elite_features_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            elite_cog = self.cog.bot.get_cog("EliteFeatures")
+            if elite_cog:
+                await elite_cog.show_elite_menu(interaction)
+            else:
+                await interaction.response.send_message(
+                    "❌ Alliance Insights module not found.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            print(f"Error loading Alliance Insights menu: {e}")
+            await interaction.response.send_message(
+                "❌ An error occurred while loading Alliance Insights menu.",
                 ephemeral=True
             )
             

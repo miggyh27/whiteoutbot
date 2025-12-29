@@ -85,6 +85,26 @@ class GiftOperations(commands.Cog):
                 status INTEGER DEFAULT 0
             )
         """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gift_redemption_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                alliance_id INTEGER NOT NULL,
+                giftcode TEXT NOT NULL,
+                fid INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                detail TEXT
+            )
+        """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS giftcode_autopause (
+                alliance_id INTEGER PRIMARY KEY,
+                paused_until INTEGER,
+                reason TEXT,
+                created_at INTEGER
+            )
+        """)
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_gift_redemption_alliance_ts ON gift_redemption_log(alliance_id, timestamp)")
         self.conn.commit()
 
         # Settings DB Connection
@@ -506,18 +526,17 @@ class GiftOperations(commands.Cog):
     
     async def _process_auto_use(self, giftcode):
         """Process auto-use for valid gift codes."""
-        self.cursor.execute("SELECT alliance_id FROM giftcodecontrol WHERE status = 1 ORDER BY priority ASC, alliance_id ASC")
-        auto_alliances = self.cursor.fetchall()
+        auto_alliances = self.get_auto_alliances()
         
         if auto_alliances:
             self.logger.info(f"Queueing auto-use for {len(auto_alliances)} alliances for code '{giftcode}'")
-            for alliance in auto_alliances:
+            for alliance_id in auto_alliances:
                 # Add to queue instead of direct execution
                 await self.add_to_validation_queue(
                     giftcode=giftcode,
                     source='auto',
                     operation_type='redemption',
-                    alliance_id=alliance[0],
+                    alliance_id=alliance_id,
                     interaction=None  # No interaction for auto-use
                 )
     
@@ -787,6 +806,10 @@ class GiftOperations(commands.Cog):
             if not self.periodic_validation_loop.is_running():
                 self.periodic_validation_loop.start()
                 self.logger.info("Started periodic validation loop (2 hour interval)")
+
+            if not self.reliability_monitor_loop.is_running():
+                self.reliability_monitor_loop.start()
+                self.logger.info("Started reliability monitor loop (30 minute interval)")
             
             self.logger.info("GiftOps Cog: on_ready setup finished successfully.")
 
@@ -1185,6 +1208,224 @@ class GiftOperations(commands.Cog):
             
         except Exception as e:
             self.logger.exception(f"GiftOps: Error in batch_process_alliance_results: {e}")
+
+    def _now_ts(self):
+        return int(time.time())
+
+    def log_redemption_attempt(self, alliance_id, giftcode, fid, status, detail=None):
+        try:
+            self.cursor.execute("""
+                INSERT INTO gift_redemption_log (timestamp, alliance_id, giftcode, fid, status, detail)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (self._now_ts(), alliance_id, giftcode, fid, status, detail))
+            self.conn.commit()
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed logging redemption attempt for {fid}/{giftcode}: {e}")
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+
+    def get_autopause_info(self, alliance_id):
+        now = self._now_ts()
+        try:
+            self.cursor.execute("""
+                SELECT paused_until, reason
+                FROM giftcode_autopause
+                WHERE alliance_id = ?
+            """, (alliance_id,))
+            row = self.cursor.fetchone()
+            if not row:
+                return None
+            paused_until, reason = row
+            if paused_until and paused_until > now:
+                return {"paused_until": paused_until, "reason": reason}
+            self.cursor.execute("DELETE FROM giftcode_autopause WHERE alliance_id = ?", (alliance_id,))
+            self.conn.commit()
+            return None
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed reading autopause for alliance {alliance_id}: {e}")
+            return None
+
+    def set_autopause(self, alliance_id, duration_seconds, reason):
+        now = self._now_ts()
+        paused_until = now + duration_seconds
+        try:
+            self.cursor.execute("""
+                INSERT INTO giftcode_autopause (alliance_id, paused_until, reason, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(alliance_id) DO UPDATE SET
+                    paused_until = excluded.paused_until,
+                    reason = excluded.reason,
+                    created_at = excluded.created_at
+            """, (alliance_id, paused_until, reason, now))
+            self.conn.commit()
+            return paused_until
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed setting autopause for alliance {alliance_id}: {e}")
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            return None
+
+    def clear_autopause(self, alliance_id):
+        try:
+            self.cursor.execute("DELETE FROM giftcode_autopause WHERE alliance_id = ?", (alliance_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed clearing autopause for alliance {alliance_id}: {e}")
+            return False
+
+    def get_auto_alliances(self):
+        now = self._now_ts()
+        try:
+            self.cursor.execute("""
+                SELECT gc.alliance_id
+                FROM giftcodecontrol gc
+                LEFT JOIN giftcode_autopause ap
+                    ON ap.alliance_id = gc.alliance_id
+                    AND ap.paused_until > ?
+                WHERE gc.status = 1
+                    AND ap.alliance_id IS NULL
+                ORDER BY gc.priority ASC, gc.alliance_id ASC
+            """, (now,))
+            return [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed to fetch auto alliances: {e}")
+            return []
+
+    def get_redemption_stats(self, alliance_id, since_ts):
+        try:
+            self.cursor.execute("""
+                SELECT status, COUNT(*)
+                FROM gift_redemption_log
+                WHERE alliance_id = ? AND timestamp >= ?
+                GROUP BY status
+            """, (alliance_id, since_ts))
+            counts = {row[0]: row[1] for row in self.cursor.fetchall()}
+            total = sum(counts.values())
+            success_statuses = {"SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"}
+            success_count = sum(counts.get(status, 0) for status in success_statuses)
+            error_count = total - success_count
+            self.cursor.execute("""
+                SELECT MAX(timestamp)
+                FROM gift_redemption_log
+                WHERE alliance_id = ? AND status IN ('SUCCESS', 'RECEIVED', 'SAME TYPE EXCHANGE')
+            """, (alliance_id,))
+            last_success = self.cursor.fetchone()[0]
+            return {
+                "counts": counts,
+                "total": total,
+                "success_count": success_count,
+                "error_count": error_count,
+                "last_success": last_success,
+            }
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed to compute redemption stats for {alliance_id}: {e}")
+            return {
+                "counts": {},
+                "total": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "last_success": None,
+            }
+
+    async def notify_autopause(self, alliance_id, reason, paused_until, total, error_rate, captcha_rate):
+        try:
+            self.cursor.execute("SELECT channel_id FROM giftcode_channel WHERE alliance_id = ?", (alliance_id,))
+            row = self.cursor.fetchone()
+            channel_id = row[0] if row else None
+            if not channel_id:
+                self.alliance_cursor.execute("SELECT channel_id FROM alliancesettings WHERE alliance_id = ?", (alliance_id,))
+                row = self.alliance_cursor.fetchone()
+                channel_id = row[0] if row else None
+
+            if not channel_id:
+                self.logger.warning(f"GiftOps: Autopause notice skipped, no channel for alliance {alliance_id}")
+                return
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                self.logger.warning(f"GiftOps: Autopause notice skipped, channel not found for alliance {alliance_id}")
+                return
+
+            self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+            name_row = self.alliance_cursor.fetchone()
+            alliance_name = name_row[0] if name_row else f"Alliance {alliance_id}"
+
+            embed = discord.Embed(
+                title="⏸️ Auto-Redemption Paused",
+                description=(
+                    f"Auto gift-code redemption is temporarily paused.\n\n"
+                    f"**Alliance:** `{alliance_name}`\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Window:** Last `{total}` attempts\n"
+                    f"**Error Rate:** `{error_rate:.0%}`\n"
+                    f"**Captcha Rate:** `{captcha_rate:.0%}`\n"
+                    f"**Resume:** <t:{paused_until}:R>\n"
+                    f"\nUse `/gift_unpause` (admin) to resume early."
+                ),
+                color=discord.Color.orange()
+            )
+            await channel.send(embed=embed)
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Failed to send autopause notice for alliance {alliance_id}: {e}")
+
+    @tasks.loop(minutes=30)
+    async def reliability_monitor_loop(self):
+        window_hours = 6
+        min_samples = 20
+        error_rate_threshold = 0.60
+        captcha_rate_threshold = 0.30
+        pause_seconds = 2 * 60 * 60
+
+        now = self._now_ts()
+        since_ts = now - (window_hours * 60 * 60)
+        captcha_statuses = {
+            "CAPTCHA_INVALID",
+            "MAX_CAPTCHA_ATTEMPTS_REACHED",
+            "OCR_FAILED_ATTEMPT",
+            "CAPTCHA_TOO_FREQUENT",
+            "CAPTCHA_SOLVER_ERROR",
+            "CAPTCHA_FETCH_ERROR",
+            "SOLVER_ERROR",
+        }
+
+        try:
+            self.cursor.execute("SELECT alliance_id FROM giftcodecontrol WHERE status = 1")
+            alliance_ids = [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            self.logger.exception(f"GiftOps: Reliability monitor failed to fetch alliances: {e}")
+            return
+
+        for alliance_id in alliance_ids:
+            if self.get_autopause_info(alliance_id):
+                continue
+
+            stats = self.get_redemption_stats(alliance_id, since_ts)
+            total = stats["total"]
+            if total < min_samples:
+                continue
+
+            counts = stats["counts"]
+            error_count = stats["error_count"]
+            error_rate = error_count / total if total else 0
+            captcha_errors = sum(counts.get(status, 0) for status in captcha_statuses)
+            captcha_rate = captcha_errors / total if total else 0
+
+            reason = None
+            if captcha_rate >= captcha_rate_threshold:
+                reason = f"High captcha failure rate ({captcha_rate:.0%})"
+            elif error_rate >= error_rate_threshold:
+                reason = f"High error rate ({error_rate:.0%})"
+
+            if reason:
+                paused_until = self.set_autopause(alliance_id, pause_seconds, reason)
+                if paused_until:
+                    self.logger.warning(f"GiftOps: Autopaused alliance {alliance_id} due to {reason}")
+                    await self.notify_autopause(alliance_id, reason, paused_until, total, error_rate, captcha_rate)
 
     async def _create_wos_session(self):
         timeout = aiohttp.ClientTimeout(total=30)
@@ -1925,10 +2166,7 @@ class GiftOperations(commands.Cog):
                                     asyncio.create_task(self.api.add_giftcode(giftcode))
 
                                 try:
-                                    await self._execute_with_retry(
-                                        lambda: self.cursor.execute("SELECT alliance_id FROM giftcodecontrol WHERE status = 1 ORDER BY priority ASC, alliance_id ASC")
-                                    )
-                                    auto_alliances = self.cursor.fetchall() or []
+                                    auto_alliances = await self._execute_with_retry(self.get_auto_alliances)
                                 except sqlite3.OperationalError as e:
                                     error_msg = f"Auto-alliance query failed after retries for code '{giftcode}': {e}"
                                     self.logger.error(error_msg)
@@ -1943,17 +2181,17 @@ class GiftOperations(commands.Cog):
                                 if auto_alliances:
                                     self.logger.info(f"GiftOps: Triggering delayed auto-redemption for code '{giftcode}' to {len(auto_alliances)} alliances")
 
-                                    for alliance in auto_alliances:
+                                    for alliance_id in auto_alliances:
                                         try:
                                             await self.add_to_validation_queue(
                                                 giftcode=giftcode,
                                                 source='periodic-auto',
                                                 operation_type='redemption',
-                                                alliance_id=alliance[0],
+                                                alliance_id=alliance_id,
                                                 interaction=None
                                             )
                                         except Exception as e:
-                                            self.logger.exception(f"Error queueing delayed auto-redemption for code {giftcode} to alliance {alliance[0]}: {e}")
+                                            self.logger.exception(f"Error queueing delayed auto-redemption for code {giftcode} to alliance {alliance_id}: {e}")
 
                                     self.settings_cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
                                     admin_ids = [row[0] for row in self.settings_cursor.fetchall()]
@@ -4372,6 +4610,7 @@ class GiftOperations(commands.Cog):
                         processed_count +=1 
                         failed_count +=1
                         failed_users_dict[fid] = (nickname, f"Led to code invalidation ({response_status})", current_cycle_count + 1)
+                    self.log_redemption_attempt(alliance_id, giftcode, fid, response_status, "code_invalidated")
                     continue
                 
                 if response_status == "SIGN_ERROR":
@@ -4391,12 +4630,13 @@ class GiftOperations(commands.Cog):
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     )
                     embed.clear_fields()
-                    
+
                     try:
                         await status_message.edit(embed=embed)
                     except Exception as embed_edit_err:
                         self.logger.warning(f"GiftOps: Failed to update progress embed for sign error: {embed_edit_err}")
 
+                    self.log_redemption_attempt(alliance_id, giftcode, fid, response_status, "sign_error")
                     break
 
                 # Handle Response
@@ -4404,6 +4644,7 @@ class GiftOperations(commands.Cog):
                 add_to_failed = False
                 queue_for_retry = False
                 retry_delay = 0
+                fail_reason = None
 
                 if response_status == "SUCCESS":
                     success_count += 1
@@ -4483,6 +4724,7 @@ class GiftOperations(commands.Cog):
                         failed_count += 1
                         cycle_failed_on = current_cycle_count + 1 if response_status not in ["CAPTCHA_INVALID", "MAX_CAPTCHA_ATTEMPTS_REACHED", "OCR_FAILED_ATTEMPT"] or (current_cycle_count + 1 >= MAX_RETRY_CYCLES) else MAX_RETRY_CYCLES
                         failed_users_dict[fid] = (nickname, fail_reason, cycle_failed_on)
+                    self.log_redemption_attempt(alliance_id, giftcode, fid, response_status, fail_reason)
                 
                 if queue_for_retry:
                     retry_after_ts = time.time() + retry_delay
