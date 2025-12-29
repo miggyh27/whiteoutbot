@@ -22,6 +22,7 @@ from .alliance import PaginatedChannelView
 from .gift_operationsapi import GiftCodeAPI
 from .gift_captchasolver import GiftCaptchaSolver
 from collections import deque
+from wos_config import get_requests_verify, get_wos_secret
 
 class GiftOperations(commands.Cog):
     def __init__(self, bot):
@@ -137,7 +138,8 @@ class GiftOperations(commands.Cog):
         self.wos_giftcode_url = "https://wos-giftcode-api.centurygame.com/api/gift_code"
         self.wos_captcha_url = "https://wos-giftcode-api.centurygame.com/api/captcha"
         self.wos_giftcode_redemption_url = "https://wos-giftcode.centurygame.com"
-        self.wos_encrypt_key = "tB87#kPtkxqOS2"
+        self.wos_encrypt_key = get_wos_secret()
+        self.requests_verify = get_requests_verify()
 
         # Retry Configuration for Requests
         self.retry_config = Retry(
@@ -150,6 +152,7 @@ class GiftOperations(commands.Cog):
         # Initialization of Locks and Cooldowns
         self.captcha_solver = None
         self._validation_lock = asyncio.Lock()
+        self.requests_lock = asyncio.Lock()
         self.last_validation_attempt_time = 0
         self.validation_cooldown = 5
         self._last_cleanup_date = None  # Track when we last ran cleanup (daily)
@@ -873,7 +876,7 @@ class GiftOperations(commands.Cog):
         try:
             self.logger.info(f"Verifying test ID: {fid}")
             
-            session, response_stove_info = self.get_stove_info_wos(player_id=fid)
+            session, response_stove_info = await self.get_stove_info_wos(player_id=fid)
             
             try:
                 player_info_json = response_stove_info.json()
@@ -1192,7 +1195,13 @@ class GiftOperations(commands.Cog):
         except Exception as e:
             self.logger.exception(f"GiftOps: Error in batch_process_alliance_results: {e}")
 
-    def get_stove_info_wos(self, player_id):
+    async def _session_post(self, session, url, **kwargs):
+        if "verify" not in kwargs:
+            kwargs["verify"] = self.requests_verify
+        async with self.requests_lock:
+            return await asyncio.to_thread(session.post, url, **kwargs)
+
+    async def get_stove_info_wos(self, player_id):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
 
@@ -1207,8 +1216,9 @@ class GiftOperations(commands.Cog):
             "time": f"{int(datetime.now().timestamp())}",
         }
         data = self.encode_data(data_to_encode)
-        
-        response_stove_info = session.post(
+
+        response_stove_info = await self._session_post(
+            session,
             self.wos_player_info_url,
             headers=headers,
             data=data,
@@ -1273,7 +1283,11 @@ class GiftOperations(commands.Cog):
             self.processing_stats["captcha_submissions"] += 1
             
             # Submit to gift code API
-            response_giftcode = session.post(self.wos_giftcode_url, data=data)
+            response_giftcode = await self._session_post(
+                session,
+                self.wos_giftcode_url,
+                data=data,
+            )
             
             # Log the redemption attempt
             log_entry_redeem = f"\n{datetime.now()} API REQ - Gift Code Redeem\nID:{player_id}, Code:{giftcode}, Captcha:{captcha_code}\n"
@@ -1390,7 +1404,7 @@ class GiftOperations(commands.Cog):
             self.captcha_solver.reset_run_stats()
             
             # Get player session
-            session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
+            session, response_stove_info = await self.get_stove_info_wos(player_id=player_id)
             log_entry_player = f"\n{datetime.now()} API REQUEST - Player Info\nPlayer ID: {player_id}\n"
             try:
                 response_json_player = response_stove_info.json()
@@ -1988,7 +2002,8 @@ class GiftOperations(commands.Cog):
         data = self.encode_data(data_to_encode)
         
         try:
-            response = session.post(
+            response = await self._session_post(
+                session,
                 self.wos_captcha_url,
                 headers=headers,
                 data=data,
@@ -5511,7 +5526,7 @@ class OCRSettingsView(discord.ui.View):
 
         try:
             logger.info(f"[Test Button] First logging in with test ID {test_fid}...")
-            session, response_stove_info = self.cog.get_stove_info_wos(player_id=test_fid)
+            session, response_stove_info = await self.cog.get_stove_info_wos(player_id=test_fid)
             
             try:
                 player_info_json = response_stove_info.json()

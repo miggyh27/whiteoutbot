@@ -7,10 +7,10 @@ import asyncio
 import time
 import hashlib
 import aiohttp
-import ssl
 from discord.ext import tasks
+from wos_config import get_ssl_context, get_wos_secret
 
-SECRET = "tB87#kPtkxqOS2"
+SECRET = get_wos_secret()
 
 class IDChannel(commands.Cog):
     def __init__(self, bot):
@@ -204,9 +204,7 @@ class IDChannel(commands.Cog):
                     form = f"sign={sign}&{form}"
                     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
 
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
+                    ssl_context = get_ssl_context()
 
                     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                         async with session.post('https://wos-giftcode-api.centurygame.com/api/player', headers=headers, data=form) as response:

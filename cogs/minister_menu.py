@@ -6,8 +6,9 @@ import time
 import hashlib
 import aiohttp
 from aiohttp_socks import ProxyConnector
+from wos_config import get_ssl_context, get_wos_secret
 
-SECRET = 'tB87#kPtkxqOS2'
+SECRET = get_wos_secret()
 
 class UserFilterModal(discord.ui.Modal, title="Filter Users"):
     def __init__(self, parent_view):
@@ -752,8 +753,9 @@ class MinisterMenu(commands.Cog):
 
         try:
             connector = ProxyConnector.from_url(proxy) if proxy else None
+            ssl_context = get_ssl_context()
             async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.post(url, headers=headers, data=form, ssl=False) as response:
+                async with session.post(url, headers=headers, data=form, ssl=ssl_context) as response:
                     if response.status == 200:
                         return await response.json()
                     else:

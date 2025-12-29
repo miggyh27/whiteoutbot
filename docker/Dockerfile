@@ -2,18 +2,18 @@ FROM python:3.12.12-slim-bookworm
 LABEL maintainer="zenpaiang <zenpai@2020220.xyz>"
 LABEL org.opencontainers.image.source=https://github.com/whiteout-project/bot
 
-COPY bootstrap.sh /bootstrap.sh
+WORKDIR /app
 
-RUN set -x
-RUN apt-get update && apt-get install --no-install-recommends -y curl ca-certificates
-RUN pip install --upgrade pip
-RUN mkdir -p /app
-RUN curl -o /app/install.py https://raw.githubusercontent.com/whiteout-project/install/refs/heads/main/install.py
-RUN cd /app; python install.py
-RUN chmod +x /bootstrap.sh
-RUN apt-get -y autoremove && apt-get -y autoclean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install --no-install-recommends -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+RUN chmod +x /app/docker/bootstrap.sh
 
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /app
-ENTRYPOINT ["/bin/sh", "/bootstrap.sh"]
+ENTRYPOINT ["/bin/sh", "/app/docker/bootstrap.sh"]

@@ -819,6 +819,22 @@ if __name__ == "__main__":
                     if download_resp.status_code == 200:
                         with open("package.zip", "wb") as f:
                             f.write(download_resp.content)
+
+                        expected_hash = os.getenv("WOS_UPDATE_SHA256")
+                        allow_unsigned = os.getenv("WOS_ALLOW_UNSIGNED_UPDATE", "").strip().lower() in [
+                            "1", "true", "yes", "y", "on"
+                        ]
+                        actual_hash = calculate_file_hash("package.zip")
+
+                        if expected_hash:
+                            if actual_hash != expected_hash:
+                                print(F.RED + "ERROR: Update package SHA256 mismatch. Aborting update." + R)
+                                safe_remove("package.zip")
+                                return
+                        elif not allow_unsigned:
+                            print(F.RED + "ERROR: Unsigned update blocked. Set WOS_ALLOW_UNSIGNED_UPDATE=1 to proceed." + R)
+                            safe_remove("package.zip")
+                            return
                         
                         if os.path.exists("update") and os.path.isdir("update"):
                             if not safe_remove("update"):
@@ -989,14 +1005,24 @@ if __name__ == "__main__":
 
     init(autoreset=True)
 
+    from wos_config import get_discord_token, should_write_token_file
+
     token_file = "bot_token.txt"
-    if not os.path.exists(token_file):
-        bot_token = input("Enter the bot token: ")
-        with open(token_file, "w") as f:
-            f.write(bot_token)
+    bot_token = get_discord_token()
+
+    if bot_token:
+        if should_write_token_file():
+            with open(token_file, "w") as f:
+                f.write(bot_token)
     else:
-        with open(token_file, "r") as f:
-            bot_token = f.read().strip()
+        if os.path.exists(token_file):
+            with open(token_file, "r") as f:
+                bot_token = f.read().strip()
+        else:
+            bot_token = input("Enter the bot token: ")
+            if should_write_token_file():
+                with open(token_file, "w") as f:
+                    f.write(bot_token)
 
     if not os.path.exists("db"):
         os.makedirs("db")

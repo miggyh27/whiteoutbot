@@ -1,0 +1,18 @@
+services:
+  wos-discord-bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: wos-discord-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - UPDATE=0
+      - BETA=0
+      - DEBUG=0
+    volumes:
+      - ./data/db:/app/db
+      - ./data/log:/app/log
+      - ./data/backups:/app/backups
+      - ./data/captcha_images:/app/captcha_images

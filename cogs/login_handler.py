@@ -2,10 +2,10 @@ import aiohttp
 import asyncio
 import hashlib
 import time
-import ssl
 import os
 from datetime import datetime
 from typing import Optional, List, Dict, Callable
+from wos_config import get_ssl_context, get_wos_secret
 
 class LoginHandler:
     """
@@ -30,7 +30,7 @@ class LoginHandler:
         # API Configuration for login/player check
         self.api1_url = 'https://wos-giftcode-api.centurygame.com/api/player'
         self.api2_url = 'https://gof-report-api-formal.centurygame.com/api/player'
-        self.secret = 'tB87#kPtkxqOS2'
+        self.secret = get_wos_secret()
         
         # Rate limiting for login operations
         self.api1_requests = []  # Timestamps of API1 requests
@@ -67,10 +67,7 @@ class LoginHandler:
     
     def _create_ssl_context(self):
         """Create reusable SSL context"""
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        return ssl_context
+        return get_ssl_context()
     
     def log_message(self, message: str):
         """Log a message with timestamp"""

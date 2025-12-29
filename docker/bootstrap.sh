@@ -9,12 +9,14 @@ if [ -z "${DISCORD_BOT_TOKEN}" ]; then
     exit 1
 fi
 
-echo "${DISCORD_BOT_TOKEN}" > bot_token.txt
+if [ "${WOS_WRITE_TOKEN_FILE}" = "1" ]; then
+    echo "${DISCORD_BOT_TOKEN}" > bot_token.txt
+fi
 
-if [ "${UPDATE}" = "0" ]; then
-    ARGS="--no-update"
+if [ "${UPDATE}" = "1" ]; then
+    ARGS="--autoupdate"
 else
-	ARGS="--autoupdate"
+    ARGS="--no-update"
 fi
 
 if [ "${BETA}" = "1" ]; then

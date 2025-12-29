@@ -5,6 +5,7 @@ import sqlite3
 import aiohttp
 import time
 import ssl
+from wos_config import get_wos_secret
 
 class RegisterSettingsView(discord.ui.View):
     def __init__(self, cog):
@@ -142,7 +143,7 @@ class Register(commands.Cog):
         session = aiohttp.ClientSession()
         
         data_nosign = f"fid={fid}&time={time.time_ns()}"
-        sign = hashlib.md5((data_nosign + "tB87#kPtkxqOS2").encode()).hexdigest()
+        sign = hashlib.md5((data_nosign + get_wos_secret()).encode()).hexdigest()
         data = f"sign={sign}&{data_nosign}"
 
         try:

@@ -10,6 +10,7 @@ import time
 import re
 from datetime import datetime
 import json
+from wos_config import get_ssl_context, get_wos_secret
 
 try:
     import arabic_reshaper
@@ -18,7 +19,7 @@ try:
 except ImportError:
     ARABIC_SUPPORT = False
 
-SECRET = 'tB87#kPtkxqOS2'
+SECRET = get_wos_secret()
 
 class ChannelSelectView(discord.ui.View):
     def __init__(self, bot, context: str):
@@ -205,8 +206,9 @@ class MinisterSchedule(commands.Cog):
 
         try:
             connector = ProxyConnector.from_url(proxy) if proxy else None
+            ssl_context = get_ssl_context()
             async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.post(url, headers=headers, data=form, ssl=False) as response:
+                async with session.post(url, headers=headers, data=form, ssl=ssl_context) as response:
                     if response.status == 200:
                         return await response.json()
                     else:
