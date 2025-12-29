@@ -1275,6 +1275,16 @@ class AllianceMemberOperations(commands.Cog):
             message = await interaction.original_response()
             # Get the embed from the existing message
             embed = (await interaction.original_response()).embeds[0]
+
+        last_edit_ts = 0.0
+        edit_interval = 3.0
+
+        async def maybe_edit(force=False):
+            nonlocal last_edit_ts
+            now = time.time()
+            if force or (now - last_edit_ts) >= edit_interval:
+                await message.edit(embed=embed)
+                last_edit_ts = now
         
         # Reset rate limit tracking for this operation
         self.login_handler.api1_requests = []
@@ -1282,7 +1292,7 @@ class AllianceMemberOperations(commands.Cog):
         
         # Check API availability before starting
         embed.description = "🔍 Checking API availability..."
-        await message.edit(embed=embed)
+        await maybe_edit(force=True)
         
         await self.login_handler.check_apis_availability()
         
@@ -1290,7 +1300,7 @@ class AllianceMemberOperations(commands.Cog):
             # No APIs available
             embed.description = "❌ Both APIs are unavailable. Cannot proceed."
             embed.color = discord.Color.red()
-            await message.edit(embed=embed)
+            await maybe_edit(force=True)
             return
         
         # Get processing rate from login handler
@@ -1300,7 +1310,7 @@ class AllianceMemberOperations(commands.Cog):
         queue_info = f"\n📋 **Operations in queue:** {self.login_handler.get_queue_info()['queue_size']}" if self.login_handler.get_queue_info()['queue_size'] > 0 else ""
         embed.description = f"Processing {total_users} members...\n{rate_text}{queue_info}\n\n**Progress:** `0/{total_users}`"
         embed.color = discord.Color.blue()
-        await message.edit(embed=embed)
+        await maybe_edit(force=True)
 
         added_count = 0
         error_count = 0 
@@ -1347,7 +1357,7 @@ class AllianceMemberOperations(commands.Cog):
                     else ", ".join([n for _, n in already_exists_users]) or "-",
                     inline=False
                 )
-                await message.edit(embed=embed)
+                await maybe_edit()
             
             index = 0
             while index < len(fids_to_process):
@@ -1357,7 +1367,7 @@ class AllianceMemberOperations(commands.Cog):
                     queue_info = f"\n📋 **Operations in queue:** {self.login_handler.get_queue_info()['queue_size']}" if self.login_handler.get_queue_info()['queue_size'] > 0 else ""
                     current_progress = already_exists_count + index + 1
                     embed.description = f"Processing {total_users} members...\n{rate_text}{queue_info}\n\n**Progress:** `{current_progress}/{total_users}`"
-                    await message.edit(embed=embed)
+                    await maybe_edit()
                     
                     # Fetch player data using login handler
                     result = await self.login_handler.fetch_player_data(fid)
@@ -1382,7 +1392,7 @@ class AllianceMemberOperations(commands.Cog):
                             queue_info = f"\n📋 **Operations in queue:** {self.login_handler.get_queue_info()['queue_size']}" if self.login_handler.get_queue_info()['queue_size'] > 0 else ""
                             embed.description = f"⚠️ Rate limit reached. Waiting {remaining_time:.0f} seconds...{queue_info}"
                             embed.color = discord.Color.orange()
-                            await message.edit(embed=embed)
+                            await maybe_edit()
                             
                             # Wait for up to 5 seconds before updating
                             await asyncio.sleep(min(5, remaining_time))
@@ -1423,7 +1433,7 @@ class AllianceMemberOperations(commands.Cog):
                                     else ", ".join([n for _, n in added_users]) or "-",
                                     inline=False
                                 )
-                                await message.edit(embed=embed)
+                                await maybe_edit()
                                 
                             except sqlite3.IntegrityError as e:
                                 # This shouldn't happen since we pre-filtered, but handle it just in case
@@ -1439,7 +1449,7 @@ class AllianceMemberOperations(commands.Cog):
                                     else ", ".join([n for _, n in already_exists_users]) or "-",
                                     inline=False
                                 )
-                                await message.edit(embed=embed)
+                                await maybe_edit()
                                 
                             except Exception as e:
                                 with open(log_file_path, 'a', encoding='utf-8') as log_file:
@@ -1454,7 +1464,7 @@ class AllianceMemberOperations(commands.Cog):
                                     else ", ".join(error_users) or "-",
                                     inline=False
                                 )
-                                await message.edit(embed=embed)
+                                await maybe_edit()
                         else:
                             # No nickname in API response
                             error_count += 1
@@ -1474,7 +1484,7 @@ class AllianceMemberOperations(commands.Cog):
                                 else ", ".join(error_users) or "-",
                                 inline=False
                             )
-                            await message.edit(embed=embed)
+                            await maybe_edit()
                     
                     index += 1
 
@@ -1483,7 +1493,7 @@ class AllianceMemberOperations(commands.Cog):
                         log_file.write(f"ERROR: Request failed for ID {fid}: {str(e)}\n")
                         error_count += 1
                         error_users.append(fid)
-                        await message.edit(embed=embed)
+                        await maybe_edit()
                         index += 1
 
             embed.set_field_at(0, name=f"✅ Successfully Added ({added_count}/{total_users})",
@@ -1504,7 +1514,7 @@ class AllianceMemberOperations(commands.Cog):
                 inline=False
             )
 
-            await message.edit(embed=embed)
+            await maybe_edit(force=True)
 
             try:
                 with sqlite3.connect('db/settings.sqlite') as settings_db:

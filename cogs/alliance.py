@@ -24,6 +24,8 @@ class Alliance(commands.Cog):
         self._create_table()
         self._check_and_add_column()
 
+        self.default_control_interval = 10
+
     def _create_table(self):
         self.c.execute("""
             CREATE TABLE IF NOT EXISTS alliance_list (
@@ -750,7 +752,7 @@ class Alliance(commands.Cog):
             await interaction.response.send_message("Please perform this action in a Discord channel.", ephemeral=True)
             return
 
-        modal = AllianceModal(title="Add Alliance")
+        modal = AllianceModal(title="Add Alliance", default_interval=str(self.default_control_interval))
         await interaction.response.send_modal(modal)
         await modal.wait()
 
@@ -1291,7 +1293,7 @@ class Alliance(commands.Cog):
                 await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 class AllianceModal(discord.ui.Modal):
-    def __init__(self, title: str, default_name: str = "", default_interval: str = "0"):
+    def __init__(self, title: str, default_name: str = "", default_interval: str = "10"):
         super().__init__(title=title)
         
         self.name = discord.ui.TextInput(

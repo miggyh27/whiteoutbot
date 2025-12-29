@@ -52,6 +52,11 @@ class LoginHandler:
         self.operation_lock = asyncio.Lock()
         self.current_operation = None
         self.queue_processor_task = None
+
+        # Discord backoff to handle Cloudflare rate limits
+        backoff_minutes = int(os.getenv("WOS_DISCORD_BACKOFF_MINUTES", "20"))
+        self.discord_backoff_seconds = max(300, backoff_minutes * 60)
+        self.discord_block_until = 0.0
         
         # SSL context (reusable)
         self.ssl_context = self._create_ssl_context()
@@ -76,6 +81,19 @@ class LoginHandler:
         
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(log_entry)
+
+    def _is_discord_cloudflare_block(self, error_text: str) -> bool:
+        text = (error_text or "").lower()
+        if "discord.com" not in text:
+            return False
+        return "cloudflare" in text or "error 1015" in text or "you are being rate limited" in text
+
+    def _set_discord_backoff(self, reason: str):
+        now = time.time()
+        self.discord_block_until = max(self.discord_block_until, now + self.discord_backoff_seconds)
+        self.log_message(
+            f"Discord backoff activated for {self.discord_backoff_seconds:.0f}s due to: {reason}"
+        )
     
     def get_alliance_lock(self, alliance_id: str) -> asyncio.Lock:
         """Get or create alliance-specific lock"""
@@ -448,6 +466,12 @@ class LoginHandler:
         
         while True:
             try:
+                now = time.time()
+                if self.discord_block_until > now:
+                    wait_time = self.discord_block_until - now
+                    self.log_message(f"Discord backoff active, waiting {wait_time:.0f}s before next operation.")
+                    await asyncio.sleep(wait_time)
+
                 # Wait for an operation
                 operation = await self.operation_queue.get()
                 self.current_operation = operation
@@ -466,6 +490,8 @@ class LoginHandler:
                     
                 except Exception as e:
                     self.log_message(f"Operation failed: {operation['description']} - Error: {str(e)}")
+                    if self._is_discord_cloudflare_block(str(e)):
+                        self._set_discord_backoff(str(e))
                     # Send error message if interaction is available
                     if operation.get('interaction'):
                         try:
