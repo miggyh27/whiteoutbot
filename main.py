@@ -1122,7 +1122,7 @@ if __name__ == "__main__":
     create_tables()
 
     async def load_cogs():
-        cogs = ["olddb", "control", "alliance", "alliance_member_operations", "bot_operations", "logsystem", "support_operations", "gift_operations", "changes", "w", "wel", "other_features", "bear_trap", "bear_trap_schedule", "id_channel", "backup_operations", "bear_trap_editor", "bear_trap_templates", "bear_trap_wizard", "attendance", "attendance_report", "minister_schedule", "minister_menu", "minister_archive", "registration", "status", "elite_features"]
+        cogs = ["olddb", "control", "alliance", "alliance_member_operations", "bot_operations", "logsystem", "support_operations", "gift_operations", "changes", "w", "wel", "other_features", "bear_trap", "bear_trap_schedule", "id_channel", "backup_operations", "bear_trap_editor", "bear_trap_templates", "bear_trap_wizard", "attendance", "attendance_report", "minister_schedule", "minister_menu", "minister_archive", "registration", "status", "elite_features", "setup_wizard"]
 
         failed_cogs = []
         
@@ -1141,11 +1141,88 @@ if __name__ == "__main__":
             print(F.YELLOW + "To fix missing or corrupted files, run: " + F.GREEN + "python main.py --repair" + R)
             print(F.YELLOW + "This will download and restore all files from the latest release.\n" + R)
 
+    async def auto_bootstrap_admin():
+        if getattr(bot, "_auto_admin_checked", False):
+            return
+        bot._auto_admin_checked = True
+
+        wizard_flag = os.getenv("WOS_SETUP_WIZARD", "1").strip().lower()
+        if wizard_flag not in {"0", "false", "no", "off"}:
+            return
+
+        auto_flag = os.getenv("WOS_AUTO_ADMIN", "1").strip().lower()
+        if auto_flag in {"0", "false", "no", "off"}:
+            return
+
+        try:
+            with sqlite3.connect("db/settings.sqlite") as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM admin")
+                admin_count = cursor.fetchone()[0]
+                if admin_count > 0:
+                    return
+
+                if not bot.guilds:
+                    print(F.YELLOW + "Auto-admin skipped: no guilds available." + R)
+                    return
+
+                if len(bot.guilds) > 1:
+                    print(F.YELLOW + "Auto-admin skipped: multiple guilds detected. Use /settings or WOS_BOOTSTRAP_ADMINS." + R)
+                    return
+
+                guild = bot.guilds[0]
+                owner_id = guild.owner_id
+                if not owner_id:
+                    print(F.YELLOW + "Auto-admin skipped: guild owner not found." + R)
+                    return
+
+                bootstrap_raw = os.getenv("WOS_BOOTSTRAP_ADMINS", "").strip()
+                if bootstrap_raw:
+                    allowed = {int(item.strip()) for item in bootstrap_raw.split(",") if item.strip().isdigit()}
+                    if owner_id not in allowed:
+                        print(F.YELLOW + "Auto-admin skipped: owner not listed in WOS_BOOTSTRAP_ADMINS." + R)
+                        return
+
+                cursor.execute("INSERT OR IGNORE INTO admin (id, is_initial) VALUES (?, 1)", (owner_id,))
+                conn.commit()
+        except Exception as e:
+            print(F.YELLOW + f"Auto-admin warning: {e}" + R)
+            return
+
+        notice = (
+            "✅ Global Admin automatically assigned to the server owner.\n"
+            "Use `/settings` to open the admin menu."
+        )
+
+        channel = None
+        guild = bot.guilds[0] if bot.guilds else None
+        if guild:
+            channel = guild.system_channel
+            if not channel:
+                member = guild.get_member(bot.user.id)
+                for candidate in guild.text_channels:
+                    if member and candidate.permissions_for(member).send_messages:
+                        channel = candidate
+                        break
+            if channel:
+                try:
+                    await channel.send(notice)
+                except Exception:
+                    pass
+
+            try:
+                owner = guild.owner or await bot.fetch_user(guild.owner_id)
+                if owner:
+                    await owner.send(notice)
+            except Exception:
+                pass
+
     @bot.event
     async def on_ready():
         try:
             print(f"{F.GREEN}Logged in as {F.CYAN}{bot.user}{R}")
             await bot.tree.sync()
+            await auto_bootstrap_admin()
         except Exception as e:
             print(f"Error syncing commands: {e}")
 

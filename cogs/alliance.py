@@ -129,6 +129,13 @@ class Alliance(commands.Cog):
             user_id = interaction.user.id
 
             if admin_count == 0:
+                wizard_flag = os.getenv("WOS_SETUP_WIZARD", "1").strip().lower()
+                if wizard_flag not in {"0", "false", "no", "off"}:
+                    wizard_cog = self.bot.get_cog("SetupWizard")
+                    if wizard_cog:
+                        await wizard_cog.show_setup_wizard(interaction)
+                        return
+
                 if bootstrap_admins and user_id not in bootstrap_admins:
                     await interaction.response.send_message(
                         "❌ This server requires a pre-approved Global Admin.",
