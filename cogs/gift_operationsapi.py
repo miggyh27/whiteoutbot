@@ -4,10 +4,13 @@ import asyncio
 import sqlite3
 import re
 import random
+import time
+import hmac
+import hashlib
 from datetime import datetime
 import discord
 import logging
-from wos_config import get_gift_api_key, get_gift_api_url, get_ssl_context
+from wos_config import get_gift_api_key, get_gift_api_url, get_ssl_context, use_gift_api_hmac
 
 logger = logging.getLogger("gift_operationsapi")
 
@@ -16,6 +19,7 @@ class GiftCodeAPI:
         self.bot = bot
         self.api_url = get_gift_api_url()
         self.api_key = get_gift_api_key()
+        self.use_hmac = use_gift_api_hmac()
         
         # Random 5-10min check interval to help reduce API load
         self.min_check_interval = 300
@@ -53,8 +57,27 @@ class GiftCodeAPI:
         self.ssl_context = get_ssl_context()
         
         self.logger = logging.getLogger("gift_operationsapi")
+
+        self.last_sync_success = None
+        self.last_sync_error = None
         
         asyncio.create_task(self.start_api_check())
+
+    def _build_headers(self, body_str: str = "") -> dict:
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+
+        if self.use_hmac and self.api_key:
+            timestamp = str(int(time.time()))
+            message = f"{timestamp}:{body_str}".encode("utf-8")
+            signature = hmac.new(self.api_key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+            headers["X-Timestamp"] = timestamp
+            headers["X-Signature"] = signature
+
+        return headers
 
     async def _execute_with_retry(self, operation, *args, max_retries=3, delay=0.1):
         """Execute a database operation with retry logic for handling locks."""
@@ -147,16 +170,14 @@ class GiftCodeAPI:
     async def sync_with_api(self):
         """Synchronize gift codes with the API."""
         try:
+            self.last_sync_error = None
             self.logger.info("Starting API synchronization")
             self.cursor.execute("SELECT giftcode, date, validation_status FROM gift_codes")
             db_codes = {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()}
             
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                headers = {
-                    'X-API-Key': self.api_key,
-                    'Content-Type': 'application/json'
-                }
+                headers = self._build_headers()
                 
                 await self._wait_for_rate_limit()
                 
@@ -165,6 +186,7 @@ class GiftCodeAPI:
                         response_text = await response.text()
                         
                         if response.status != 200:
+                            self.last_sync_error = f"HTTP {response.status}"
                             backoff_time = await self._handle_api_error(response, response_text)
                             self.logger.warning(f"API request failed, backing off for {backoff_time:.1f} seconds")
                             await asyncio.sleep(backoff_time)
@@ -174,6 +196,7 @@ class GiftCodeAPI:
                             result = json.loads(response_text)
                             if 'error' in result or 'detail' in result:
                                 error_msg = result.get('error', result.get('detail', 'Unknown error'))
+                                self.last_sync_error = f"API error: {error_msg}"
                                 self.logger.error(f"API returned error: {error_msg}")
                                 return False
                             
@@ -207,10 +230,12 @@ class GiftCodeAPI:
                                     try:
                                         code = invalid_code.split()[0] if ' ' in invalid_code else invalid_code.strip()
                                         data = {'code': code}
+                                        body_str = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                                        del_headers = self._build_headers(body_str)
                                         
                                         await self._wait_for_rate_limit()
                                         
-                                        async with session.delete(self.api_url, json=data, headers=headers) as del_response:
+                                        async with session.delete(self.api_url, json=data, headers=del_headers) as del_response:
                                             if del_response.status != 200:
                                                 self.logger.warning(f"Failed to delete invalid code {code}: {del_response.status}")
                                                 backoff_time = await self._handle_api_error(del_response, await del_response.text())
@@ -453,10 +478,12 @@ class GiftCodeAPI:
                                             'code': db_code,
                                             'date': formatted_date
                                         }
+                                        body_str = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                                        post_headers = self._build_headers(body_str)
                                         
                                         await self._wait_for_rate_limit()
                                         
-                                        async with session.post(self.api_url, json=data, headers=headers) as post_response:
+                                        async with session.post(self.api_url, json=data, headers=post_headers) as post_response:
                                             if post_response.status == 409:
                                                 self.logger.info(f"Code {db_code} already exists in API")
                                             elif post_response.status == 200:
@@ -477,18 +504,22 @@ class GiftCodeAPI:
                                         await asyncio.sleep(self.error_backoff_time)
 
                             self.current_backoff = self.error_backoff_time
+                            self.last_sync_success = datetime.utcnow().isoformat()
                             self.logger.info("API synchronization completed successfully")
                             return True
                             
                         except json.JSONDecodeError as e:
+                            self.last_sync_error = "JSON decode error"
                             self.logger.exception(f"JSON decode error: {e}, Response: {response_text[:200]}")
                             return False
                             
                 except aiohttp.ClientError as e:
+                    self.last_sync_error = f"HTTP error: {e}"
                     self.logger.exception(f"HTTP request error: {e}")
                     return False
             
         except Exception as e:
+            self.last_sync_error = f"Unexpected error: {e}"
             self.logger.exception(f"Unexpected error in sync_with_api: {e}")
             return False
             
@@ -509,16 +540,13 @@ class GiftCodeAPI:
             
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                headers = {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': self.api_key
-                }
-                
                 date_str = datetime.now().strftime("%d.%m.%Y")
                 data = {
                     'code': giftcode,
                     'date': date_str
                 }
+                body_str = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                headers = self._build_headers(body_str)
                 
                 await self._wait_for_rate_limit()
                 
@@ -581,11 +609,9 @@ class GiftCodeAPI:
             self.logger.info(f"Removing invalid code {giftcode} from API")
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                headers = {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': self.api_key
-                }
                 data = {'code': giftcode}
+                body_str = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                headers = self._build_headers(body_str)
                 
                 await self._wait_for_rate_limit()
                 
@@ -624,9 +650,7 @@ class GiftCodeAPI:
         try:
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                headers = {
-                    'X-API-Key': self.api_key
-                }
+                headers = self._build_headers()
                 
                 await self._wait_for_rate_limit()
                 

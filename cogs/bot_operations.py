@@ -3,7 +3,7 @@ from discord.ext import commands
 import os
 import sqlite3
 import asyncio
-import requests
+import aiohttp
 from .alliance_member_operations import AllianceSelectView
 
 class BotOperations(commands.Cog):
@@ -1269,12 +1269,12 @@ class BotOperations(commands.Cog):
         """Check for updates using GitHub releases API"""
         try:
             latest_release_url = "https://api.github.com/repos/whiteout-project/bot/releases/latest"
-            
-            response = requests.get(latest_release_url, timeout=10)
-            if response.status_code != 200:
-                return None, None, [], False
 
-            latest_release_data = response.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(latest_release_url, timeout=10) as response:
+                    if response.status != 200:
+                        return None, None, [], False
+                    latest_release_data = await response.json()
             latest_tag = latest_release_data.get("tag_name", "")
             current_version = self.get_current_version()
             

@@ -33,6 +33,7 @@ cp .env.example .env
 
 Edit `.env` and set:
 - `DISCORD_BOT_TOKEN=...`
+- Optional: `WOS_BOOTSTRAP_ADMINS=123,456` to restrict the first Global Admin.
 
 Start the container:
 ```bash
@@ -54,6 +55,9 @@ Data is stored under:
    - Registration: enable self-registration
    - ID Channel: create channel for ID verification
    - Notifications: set timezone to UTC and create event reminders
+
+## 4.1) Health check
+Run `/status` (Global Admin only) to verify API reachability and OCR status.
 
 ## 5) Recommended personalization
 - Alliance names and member lists

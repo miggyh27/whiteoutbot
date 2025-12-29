@@ -4,6 +4,7 @@ from discord.ext import commands
 import sqlite3  
 import asyncio
 from datetime import datetime
+import os
 
 class Alliance(commands.Cog):
     def __init__(self, bot, conn):
@@ -116,12 +117,25 @@ class Alliance(commands.Cog):
                     )
                     return
                 
+            bootstrap_admins = {
+                int(item.strip())
+                for item in os.getenv("WOS_BOOTSTRAP_ADMINS", "").split(",")
+                if item.strip().isdigit()
+            }
+
             self.c_settings.execute("SELECT COUNT(*) FROM admin")
             admin_count = self.c_settings.fetchone()[0]
 
             user_id = interaction.user.id
 
             if admin_count == 0:
+                if bootstrap_admins and user_id not in bootstrap_admins:
+                    await interaction.response.send_message(
+                        "❌ This server requires a pre-approved Global Admin.",
+                        ephemeral=True
+                    )
+                    return
+
                 self.c_settings.execute("""
                     INSERT INTO admin (id, is_initial) 
                     VALUES (?, 1)

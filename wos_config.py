@@ -53,6 +53,10 @@ def get_gift_api_key() -> str:
     return _get_env("WOS_GIFT_API_KEY", "super_secret_bot_token_nobody_will_ever_find")
 
 
+def use_gift_api_hmac() -> bool:
+    return _get_bool_env("WOS_GIFT_API_HMAC", False)
+
+
 def is_insecure_ssl_enabled() -> bool:
     return _get_bool_env("WOS_INSECURE_SSL", False)
 

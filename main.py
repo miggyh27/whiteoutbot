@@ -1028,6 +1028,16 @@ if __name__ == "__main__":
         os.makedirs("db")
         
         print(F.GREEN + "db folder created" + R)
+    try:
+        from db_migrate import run_migrations_sync
+        run_migrations_sync()
+    except Exception as e:
+        print(F.YELLOW + f"Migration warning: {e}" + R)
+    try:
+        from db_manager import patch_sqlite3
+        patch_sqlite3()
+    except Exception as e:
+        print(F.YELLOW + f"DB manager warning: {e}" + R)
 
     databases = {
         "conn_alliance": "db/alliance.sqlite",
@@ -1112,7 +1122,7 @@ if __name__ == "__main__":
     create_tables()
 
     async def load_cogs():
-        cogs = ["olddb", "control", "alliance", "alliance_member_operations", "bot_operations", "logsystem", "support_operations", "gift_operations", "changes", "w", "wel", "other_features", "bear_trap", "bear_trap_schedule", "id_channel", "backup_operations", "bear_trap_editor", "bear_trap_templates", "bear_trap_wizard", "attendance", "attendance_report", "minister_schedule", "minister_menu", "minister_archive", "registration"]
+        cogs = ["olddb", "control", "alliance", "alliance_member_operations", "bot_operations", "logsystem", "support_operations", "gift_operations", "changes", "w", "wel", "other_features", "bear_trap", "bear_trap_schedule", "id_channel", "backup_operations", "bear_trap_editor", "bear_trap_templates", "bear_trap_wizard", "attendance", "attendance_report", "minister_schedule", "minister_menu", "minister_archive", "registration", "status"]
 
         failed_cogs = []
         
