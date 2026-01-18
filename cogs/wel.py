@@ -2,16 +2,38 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import sqlite3
+from wos_config import get_admin_channel_id
 
 class GNCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.conn = sqlite3.connect('db/settings.sqlite')
         self.c = self.conn.cursor()
+        self.admin_channel_id = get_admin_channel_id()
 
     def cog_unload(self):
         if hasattr(self, 'conn'):
             self.conn.close()
+
+    async def _send_admin_embed(self, embed: discord.Embed, admin_user: discord.User | None = None) -> None:
+        if self.admin_channel_id:
+            channel = self.bot.get_channel(self.admin_channel_id)
+            if channel:
+                try:
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    print(f"Error sending admin notice to channel {self.admin_channel_id}: {e}")
+            else:
+                print(f"Admin channel {self.admin_channel_id} not found.")
+            return
+
+        if admin_user:
+            try:
+                await admin_user.send(embed=embed)
+            except discord.Forbidden:
+                print(f"Admin DM blocked for user {admin_user.id}.")
+            except Exception as e:
+                print(f"Error sending admin DM: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -74,7 +96,7 @@ class GNCommands(commands.Cog):
 
                     status_embed.set_footer(text="Thanks for using the bot! Maintained with ❤️ by the WOSLand Bot Team.")
 
-                    await admin_user.send(embed=status_embed)
+                    await self._send_admin_embed(status_embed, admin_user=admin_user)
 
                     with sqlite3.connect('db/alliance.sqlite') as alliance_db:
                         cursor = alliance_db.cursor()
@@ -142,7 +164,7 @@ class GNCommands(commands.Cog):
                                 color=discord.Color.blue()
                             )
                             alliance_embed.description = "\n".join(page)
-                            await admin_user.send(embed=alliance_embed)
+                            await self._send_admin_embed(alliance_embed, admin_user=admin_user)
 
                     else:
                         alliance_embed = discord.Embed(
@@ -150,7 +172,7 @@ class GNCommands(commands.Cog):
                             description="No alliances currently registered.",
                             color=discord.Color.blue()
                         )
-                        await admin_user.send(embed=alliance_embed)
+                        await self._send_admin_embed(alliance_embed, admin_user=admin_user)
 
                     print("Activation messages sent to admin user.")
                 else:

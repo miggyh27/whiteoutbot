@@ -10,7 +10,13 @@ import hashlib
 from datetime import datetime
 import discord
 import logging
-from wos_config import get_gift_api_key, get_gift_api_url, get_ssl_context, use_gift_api_hmac
+from wos_config import (
+    get_admin_channel_id,
+    get_gift_api_key,
+    get_gift_api_url,
+    get_ssl_context,
+    use_gift_api_hmac,
+)
 
 logger = logging.getLogger("gift_operationsapi")
 
@@ -20,6 +26,7 @@ class GiftCodeAPI:
         self.api_url = get_gift_api_url()
         self.api_key = get_gift_api_key()
         self.use_hmac = use_gift_api_hmac()
+        self.admin_channel_id = get_admin_channel_id()
         
         # Random 5-10min check interval to help reduce API load
         self.min_check_interval = 300
@@ -396,13 +403,35 @@ class GiftCodeAPI:
                                                     color=embed_color
                                                 )
 
-                                                for admin_id in admin_ids:
-                                                    try:
-                                                        admin_user = await self.bot.fetch_user(admin_id[0])
-                                                        if admin_user:
-                                                            await admin_user.send(embed=admin_embed)
-                                                    except Exception as e:
-                                                        self.logger.exception(f"Error sending notification to admin {admin_id[0]}: {e}")
+                                                if self.admin_channel_id:
+                                                    channel = self.bot.get_channel(self.admin_channel_id)
+                                                    if channel:
+                                                        try:
+                                                            await channel.send(embed=admin_embed)
+                                                            return
+                                                        except Exception as e:
+                                                            self.logger.exception(
+                                                                f"Error sending admin notice to channel {self.admin_channel_id}: {e}"
+                                                            )
+                                                    else:
+                                                        self.logger.warning(
+                                                            f"Admin channel {self.admin_channel_id} not found"
+                                                        )
+
+                                                if not self.admin_channel_id:
+                                                    for admin_id in admin_ids:
+                                                        try:
+                                                            admin_user = await self.bot.fetch_user(admin_id[0])
+                                                            if admin_user:
+                                                                await admin_user.send(embed=admin_embed)
+                                                        except discord.Forbidden:
+                                                            self.logger.warning(
+                                                                f"Admin DM blocked for user {admin_id[0]} (403 Forbidden)"
+                                                            )
+                                                        except Exception as e:
+                                                            self.logger.exception(
+                                                                f"Error sending notification to admin {admin_id[0]}: {e}"
+                                                            )
 
                                             # Send notification to all gift code channels
                                             try:

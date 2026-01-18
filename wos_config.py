@@ -57,6 +57,16 @@ def use_gift_api_hmac() -> bool:
     return _get_bool_env("WOS_GIFT_API_HMAC", False)
 
 
+def get_admin_channel_id() -> int | None:
+    value = _get_env("WOS_ADMIN_CHANNEL_ID")
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def is_insecure_ssl_enabled() -> bool:
     return _get_bool_env("WOS_INSECURE_SSL", False)
 

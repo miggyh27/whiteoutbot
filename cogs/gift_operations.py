@@ -20,7 +20,7 @@ from .alliance import PaginatedChannelView
 from .gift_operationsapi import GiftCodeAPI
 from .gift_captchasolver import GiftCaptchaSolver
 from collections import deque
-from wos_config import get_ssl_context, get_wos_secret
+from wos_config import get_admin_channel_id, get_ssl_context, get_wos_secret
 
 class GiftOperations(commands.Cog):
     def __init__(self, bot):
@@ -158,6 +158,7 @@ class GiftOperations(commands.Cog):
         self.wos_giftcode_redemption_url = "https://wos-giftcode.centurygame.com"
         self.wos_encrypt_key = get_wos_secret()
         self.wos_ssl_context = get_ssl_context()
+        self.admin_channel_id = get_admin_channel_id()
 
         # Initialization of Locks and Cooldowns
         self.captcha_solver = None
@@ -254,6 +255,32 @@ class GiftOperations(commands.Cog):
                 self.logger.info("Initialized default test ID (244886619) in database")
         except Exception as e:
             self.logger.exception(f"Error setting up test ID table: {e}")
+
+    async def _notify_admins(self, embed: discord.Embed) -> None:
+        if self.admin_channel_id:
+            channel = self.bot.get_channel(self.admin_channel_id)
+            if channel:
+                try:
+                    await channel.send(embed=embed)
+                except Exception as e:
+                    self.logger.exception(
+                        f"Error sending admin notice to channel {self.admin_channel_id}: {e}"
+                    )
+            else:
+                self.logger.warning(f"Admin channel {self.admin_channel_id} not found")
+            return
+
+        self.settings_cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
+        admin_ids = [row[0] for row in self.settings_cursor.fetchall()]
+        for admin_id in admin_ids:
+            try:
+                admin_user = await self.bot.fetch_user(admin_id)
+                if admin_user:
+                    await admin_user.send(embed=embed)
+            except discord.Forbidden:
+                self.logger.warning(f"Admin DM blocked for user {admin_id} (403 Forbidden)")
+            except Exception as e:
+                self.logger.exception(f"Error notifying admin {admin_id}: {e}")
 
     async def _execute_with_retry(self, operation, *args, max_retries=3, delay=0.1):
         """Execute a database operation with retry logic for handling locks."""
@@ -2137,22 +2164,16 @@ class GiftOperations(commands.Cog):
                                 asyncio.create_task(self.api.remove_giftcode(giftcode, from_validation=True))
                             
                             # Notify admins about invalidated code
-                            self.settings_cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-                            admin_ids = [row[0] for row in self.settings_cursor.fetchall()]
-                            
-                            for admin_id in admin_ids:
-                                try:
-                                    admin_user = await self.bot.fetch_user(admin_id)
-                                    if admin_user:
-                                        embed = discord.Embed(
-                                            title="❌ Gift Code Invalidated",
-                                            description=f"Code `{giftcode}` has been invalidated during periodic validation.\nStatus: {status}",
-                                            color=discord.Color.red(),
-                                            timestamp=datetime.now()
-                                        )
-                                        await admin_user.send(embed=embed)
-                                except Exception as e:
-                                    self.logger.exception(f"Error notifying admin {admin_id}: {e}")
+                            embed = discord.Embed(
+                                title="❌ Gift Code Invalidated",
+                                description=(
+                                    f"Code `{giftcode}` has been invalidated during periodic validation.\n"
+                                    f"Status: {status}"
+                                ),
+                                color=discord.Color.red(),
+                                timestamp=datetime.now(),
+                            )
+                            await self._notify_admins(embed)
                         
                         elif status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "TOO_SMALL_SPEND_MORE", "TOO_POOR_SPEND_MORE"]:
                             codes_still_valid += 1
@@ -2193,22 +2214,16 @@ class GiftOperations(commands.Cog):
                                         except Exception as e:
                                             self.logger.exception(f"Error queueing delayed auto-redemption for code {giftcode} to alliance {alliance_id}: {e}")
 
-                                    self.settings_cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-                                    admin_ids = [row[0] for row in self.settings_cursor.fetchall()]
-
-                                    for admin_id in admin_ids:
-                                        try:
-                                            admin_user = await self.bot.fetch_user(admin_id)
-                                            if admin_user:
-                                                embed = discord.Embed(
-                                                    title="✅ Auto-Redemption Started",
-                                                    description=f"Code `{giftcode}` has been validated and auto-redemption is now starting for {len(auto_alliances)} alliance(s).",
-                                                    color=discord.Color.green(),
-                                                    timestamp=datetime.now()
-                                                )
-                                                await admin_user.send(embed=embed)
-                                        except Exception as e:
-                                            self.logger.exception(f"Error notifying admin {admin_id} about delayed auto-redemption: {e}")
+                                    embed = discord.Embed(
+                                        title="✅ Auto-Redemption Started",
+                                        description=(
+                                            f"Code `{giftcode}` has been validated and auto-redemption is now "
+                                            f"starting for {len(auto_alliances)} alliance(s)."
+                                        ),
+                                        color=discord.Color.green(),
+                                        timestamp=datetime.now(),
+                                    )
+                                    await self._notify_admins(embed)
                         
                         else:
                             self.logger.info(f"GiftOps: Code '{giftcode}' returned status '{status}' during periodic validation.")
@@ -2587,9 +2602,6 @@ class GiftOperations(commands.Cog):
             self.cursor.execute("SELECT giftcode, validation_status FROM gift_codes WHERE validation_status != 'invalid'")
             all_codes = self.cursor.fetchall()
             
-            self.settings_cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-            admin_ids = [row[0] for row in self.settings_cursor.fetchall()]
-            
             if not all_codes:
                 self.logger.info("[validate_gift_codes] No codes found needing validation.")
                 return
@@ -2635,13 +2647,7 @@ class GiftOperations(commands.Cog):
                         color=discord.Color.orange()
                     )
                     
-                    for admin_id in admin_ids:
-                        try:
-                            admin_user = await self.bot.fetch_user(admin_id)
-                            if admin_user:
-                                await admin_user.send(embed=admin_embed)
-                        except Exception as e:
-                            self.logger.exception(f"Error sending message to admin {admin_id}: {str(e)}")
+                    await self._notify_admins(admin_embed)
                 
                 elif status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "TOO_SMALL_SPEND_MORE", "TOO_POOR_SPEND_MORE"] and current_db_status == 'pending':
                     self.logger.info(f"[validate_gift_codes] Code {giftcode} confirmed valid. Updating status to 'validated'.")
