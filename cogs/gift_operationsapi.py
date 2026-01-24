@@ -484,8 +484,14 @@ class GiftCodeAPI:
                                 self.logger.exception(f"Error committing new codes: {e}")
                             
                             api_code_set = {code for code, _ in valid_codes}
+                            
+                            # Re-fetch validation statuses from database to get fresh data
+                            # This ensures we have the latest status including any updates from this sync
+                            self.cursor.execute("SELECT giftcode, date, validation_status FROM gift_codes")
+                            db_codes_fresh = {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()}
+                            
                             codes_to_push = []
-                            for db_code, (db_date, db_status) in db_codes.items(): # Push our valid codes to the API if they're not already there
+                            for db_code, (db_date, db_status) in db_codes_fresh.items(): # Push our valid codes to the API if they're not already there
                                 if db_status != 'invalid' and db_status != 'pending':
                                     if db_code not in api_code_set:
                                         codes_to_push.append((db_code, db_date))
@@ -525,6 +531,9 @@ class GiftCodeAPI:
                                                     self.logger.warning(f"Code {db_code} marked invalid by API, updating local status")
                                                     self.cursor.execute("UPDATE gift_codes SET validation_status = 'invalid' WHERE giftcode = ?", (db_code,))
                                                     await self._safe_commit(self.conn, "mark code invalid")
+                                                    # Update in-memory dictionary to prevent retry in current sync
+                                                    if db_code in db_codes:
+                                                        db_codes[db_code] = (db_codes[db_code][0], 'invalid')
                                                 
                                                 backoff_time = await self._handle_api_error(post_response, response_text)
                                                 await asyncio.sleep(backoff_time)
