@@ -1506,6 +1506,7 @@ class GiftOperations(commands.Cog):
     async def attempt_gift_code_with_api(self, player_id, giftcode, session):
         """Attempt to redeem a gift code."""
         max_ocr_attempts = 4
+        last_fetch_error = False
         
         for attempt in range(max_ocr_attempts):
             self.logger.info(f"GiftOps: Attempt {attempt + 1}/{max_ocr_attempts} to fetch/solve captcha for ID {player_id}")
@@ -1514,16 +1515,24 @@ class GiftOperations(commands.Cog):
             captcha_image_base64, error = await self.fetch_captcha(player_id, session)
             
             if error:
+                last_fetch_error = True
                 if error == "CAPTCHA_TOO_FREQUENT":
                     self.logger.info(f"GiftOps: API returned CAPTCHA_TOO_FREQUENT for ID {player_id}")
                     return "CAPTCHA_TOO_FREQUENT", None, None, None
                 else:
                     self.logger.error(f"GiftOps: Captcha fetch error for ID {player_id}: {error}")
-                    return "CAPTCHA_FETCH_ERROR", None, None, None
+                    if attempt == max_ocr_attempts - 1:
+                        return "CAPTCHA_FETCH_ERROR", None, None, None
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+                    continue
             
             if not captcha_image_base64:
                 self.logger.warning(f"GiftOps: No captcha image returned for ID {player_id}")
-                return "CAPTCHA_FETCH_ERROR", None, None, None
+                last_fetch_error = True
+                if attempt == max_ocr_attempts - 1:
+                    return "CAPTCHA_FETCH_ERROR", None, None, None
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+                continue
             
             # Decode captcha image
             try:
@@ -1532,9 +1541,14 @@ class GiftOperations(commands.Cog):
                 else:
                     img_b64_data = captcha_image_base64
                 image_bytes = base64.b64decode(img_b64_data)
+                last_fetch_error = False
             except Exception as decode_err:
                 self.logger.error(f"Failed to decode base64 image for ID {player_id}: {decode_err}")
-                return "CAPTCHA_FETCH_ERROR", None, None, None
+                last_fetch_error = True
+                if attempt == max_ocr_attempts - 1:
+                    return "CAPTCHA_FETCH_ERROR", None, None, None
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+                continue
             
             # Solve captcha
             self.processing_stats["ocr_solver_calls"] += 1
@@ -1650,6 +1664,8 @@ class GiftOperations(commands.Cog):
             
             return status, image_bytes, captcha_code, method
         
+        if last_fetch_error:
+            return "CAPTCHA_FETCH_ERROR", None, None, None
         return "MAX_CAPTCHA_ATTEMPTS_REACHED", None, None, None
 
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
@@ -1669,8 +1685,9 @@ class GiftOperations(commands.Cog):
                 existing_record = self.cursor.fetchone()
                 if existing_record:
                     if existing_record[0] in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "TIME_ERROR", "CDK_NOT_FOUND", "USAGE_LIMIT"]:
-                        self.logger.info(f"CACHE HIT - User {player_id} code '{giftcode}' status: {existing_record[0]}")
-                        return existing_record[0]
+                        status = existing_record[0]
+                        self.logger.info(f"CACHE HIT - User {player_id} code '{giftcode}' status: {status}")
+                        return status
 
             # Check if OCR Enabled and Solver Ready
             self.settings_cursor.execute("SELECT enabled FROM ocr_settings ORDER BY id DESC LIMIT 1")
@@ -2296,6 +2313,16 @@ class GiftOperations(commands.Cog):
 
                 if "data" in captcha_data and "img" in captcha_data["data"]:
                     return captcha_data["data"]["img"], None
+
+                self.logger.warning(
+                    f"Captcha fetch missing image for ID {player_id}. "
+                    f"Response: {str(captcha_data)[:200]}"
+                )
+            else:
+                snippet = (response_text or "")[:200]
+                self.logger.warning(
+                    f"Captcha fetch non-200 for ID {player_id}: status={status_code}, body='{snippet}'"
+                )
 
             return None, "CAPTCHA_FETCH_ERROR"
         except Exception as e:
