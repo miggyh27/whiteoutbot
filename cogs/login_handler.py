@@ -1,4 +1,6 @@
 import aiohttp
+import sqlite3
+import time
 import asyncio
 import hashlib
 import time
@@ -289,6 +291,7 @@ class LoginHandler:
                         
                         # Check if we have valid data
                         if data.get('data'):
+                            self._record_last_seen(fid)
                             return {
                                 'status': 'success',
                                 'data': data['data'],
@@ -430,6 +433,19 @@ class LoginHandler:
                              (self.rate_limit_per_api - len(self.api2_requests)) if self.dual_api_mode else
                              (self.rate_limit_per_api - len(self.api1_requests if 1 in self.available_apis else self.api2_requests))
         }
+
+    def _record_last_seen(self, fid: str) -> None:
+        try:
+            with sqlite3.connect('db/users.sqlite') as users_db:
+                cursor = users_db.cursor()
+                cursor.execute(
+                    "UPDATE users SET last_seen_ts = ? WHERE fid = ?",
+                    (int(time.time()), fid),
+                )
+                users_db.commit()
+        except Exception:
+            # Best-effort update; do not interrupt login flow.
+            pass
     
     async def start_queue_processor(self):
         """Start the queue processor if not already running"""

@@ -69,6 +69,9 @@ class AllianceMemberOperations(commands.Cog):
         
         self.conn_users = sqlite3.connect('db/users.sqlite')
         self.c_users = self.conn_users.cursor()
+        self.activity_window_days = int(os.getenv("WOS_ACTIVITY_WINDOW_DAYS", "14"))
+        self.activity_window_seconds = self.activity_window_days * 86400
+        self._ensure_activity_columns()
         
         self.level_mapping = {
             31: "F30 - 1", 32: "F30 - 2", 33: "F30 - 3", 34: "F30 - 4",
@@ -118,6 +121,182 @@ class AllianceMemberOperations(commands.Cog):
                 return emoji
         return "🔥"
 
+    def _ensure_activity_columns(self) -> None:
+        try:
+            self.c_users.execute("ALTER TABLE users ADD COLUMN last_seen_ts INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.c_users.execute("ALTER TABLE users ADD COLUMN active_override INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn_users.commit()
+        except Exception:
+            pass
+
+    def _activity_status(self, last_seen_ts: int | None, active_override: int | None) -> tuple[bool, str]:
+        if active_override == 1:
+            return True, "override"
+        if active_override == 0:
+            return False, "override"
+        if last_seen_ts and last_seen_ts >= int(time.time()) - self.activity_window_seconds:
+            return True, "auto"
+        return False, "auto"
+
+    def _get_activity_stats(self, alliance_id: int):
+        with sqlite3.connect('db/users.sqlite') as users_db:
+            cursor = users_db.cursor()
+            cursor.execute(
+                "SELECT fid, nickname, furnace_lv, last_seen_ts, active_override FROM users WHERE alliance = ?",
+                (alliance_id,),
+            )
+            members = cursor.fetchall()
+
+        total = len(members)
+        override_active = 0
+        override_inactive = 0
+        auto_active = 0
+        auto_inactive = 0
+        unknown = 0
+
+        for _, _, _, last_seen_ts, active_override in members:
+            if active_override == 1:
+                override_active += 1
+            elif active_override == 0:
+                override_inactive += 1
+            else:
+                if last_seen_ts is None:
+                    unknown += 1
+                    auto_inactive += 1
+                elif last_seen_ts >= int(time.time()) - self.activity_window_seconds:
+                    auto_active += 1
+                else:
+                    auto_inactive += 1
+
+        active_total = override_active + auto_active
+        inactive_total = override_inactive + auto_inactive
+
+        return {
+            "members": members,
+            "total": total,
+            "active_total": active_total,
+            "inactive_total": inactive_total,
+            "override_active": override_active,
+            "override_inactive": override_inactive,
+            "auto_active": auto_active,
+            "auto_inactive": auto_inactive,
+            "unknown": unknown,
+        }
+
+    async def show_activity_tracker(self, interaction: discord.Interaction, alliance_id: int):
+        with sqlite3.connect('db/alliance.sqlite') as alliance_db:
+            cursor = alliance_db.cursor()
+            cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+            result = cursor.fetchone()
+            alliance_name = result[0] if result else f"Alliance {alliance_id}"
+
+        stats = self._get_activity_stats(alliance_id)
+        if stats["total"] == 0:
+            await interaction.response.send_message(
+                "❌ No members found in this alliance.",
+                ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🟢 Activity Tracker - {alliance_name}",
+            description=(
+                f"**Active Window:** `{self.activity_window_days} days`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 **Total Members:** `{stats['total']}`\n"
+                f"✅ **Active (Total):** `{stats['active_total']}`\n"
+                f"❌ **Inactive (Total):** `{stats['inactive_total']}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🟩 **Auto Active:** `{stats['auto_active']}`\n"
+                f"🟥 **Auto Inactive:** `{stats['auto_inactive']}`\n"
+                f"⭐ **Override Active:** `{stats['override_active']}`\n"
+                f"⛔ **Override Inactive:** `{stats['override_inactive']}`\n"
+                f"❔ **Unknown (no activity yet):** `{stats['unknown']}`\n"
+            ),
+            color=discord.Color.green()
+        )
+
+        view = ActivityTrackerView(self, alliance_id, alliance_name)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=view)
+        else:
+            await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _show_activity_member_select(self, interaction: discord.Interaction, alliance_id: int, alliance_name: str, action: str):
+        with sqlite3.connect('db/users.sqlite') as users_db:
+            cursor = users_db.cursor()
+            cursor.execute(
+                "SELECT fid, nickname, furnace_lv FROM users WHERE alliance = ? ORDER BY nickname",
+                (alliance_id,),
+            )
+            members = cursor.fetchall()
+
+        if not members:
+            await interaction.response.send_message("❌ No members found in this alliance.", ephemeral=True)
+            return
+
+        action_map = {
+            "active": ("✅ Mark Active", "Select members to mark active (Page {page}/{max_page})"),
+            "inactive": ("❌ Mark Inactive", "Select members to mark inactive (Page {page}/{max_page})"),
+            "clear": ("🧹 Clear Override", "Select members to clear override (Page {page}/{max_page})"),
+        }
+        title, placeholder = action_map.get(action, ("Update Activity", "Select members (Page {page}/{max_page})"))
+
+        member_view = MemberSelectView(
+            members,
+            alliance_name,
+            self,
+            placeholder_text=placeholder,
+            process_label="Apply",
+            context_label=title,
+        )
+
+        async def member_callback(member_interaction: discord.Interaction, selected_fids=None):
+            if not selected_fids:
+                await member_interaction.response.send_message("No members selected.", ephemeral=True)
+                return
+
+            with sqlite3.connect('db/users.sqlite') as users_db:
+                cursor = users_db.cursor()
+                placeholders = ",".join("?" for _ in selected_fids)
+                if action == "active":
+                    cursor.execute(
+                        f"UPDATE users SET active_override = 1 WHERE fid IN ({placeholders})",
+                        selected_fids,
+                    )
+                elif action == "inactive":
+                    cursor.execute(
+                        f"UPDATE users SET active_override = 0 WHERE fid IN ({placeholders})",
+                        selected_fids,
+                    )
+                else:
+                    cursor.execute(
+                        f"UPDATE users SET active_override = NULL WHERE fid IN ({placeholders})",
+                        selected_fids,
+                    )
+                users_db.commit()
+
+            await self.show_activity_tracker(member_interaction, alliance_id)
+
+        member_view.callback = member_callback
+
+        select_embed = discord.Embed(
+            title=title,
+            description=f"**Alliance:** {alliance_name}\nSelect members below:",
+            color=discord.Color.blue(),
+        )
+
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=select_embed, view=member_view)
+        else:
+            await interaction.response.edit_message(embed=select_embed, view=member_view)
+
     async def handle_member_operations(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="👥 Alliance Member Operations",
@@ -128,6 +307,7 @@ class AllianceMemberOperations(commands.Cog):
                 "🔄 `Transfer Members` - Transfer members to another alliance\n"
                 "➖ `Remove Members` - Remove members from alliance\n"
                 "👥 `View Members` - View alliance member list\n"
+                "🟢 `Activity Tracker` - Track active/inactive members\n"
                 "📊 `Export Members` - Export member data to CSV/TSV\n"
                 "🏠 `Main Menu` - Return to main menu"
             ),
@@ -699,6 +879,93 @@ class AllianceMemberOperations(commands.Cog):
                     if not button_interaction.response.is_done():
                         await button_interaction.response.send_message(
                             "❌ An error occurred while displaying the member list.",
+                            ephemeral=True
+                        )
+
+            @discord.ui.button(
+                label="Activity Tracker",
+                emoji="🟢",
+                style=discord.ButtonStyle.secondary,
+                custom_id="activity_tracker",
+                row=1
+            )
+            async def activity_tracker_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                try:
+                    with sqlite3.connect('db/settings.sqlite') as settings_db:
+                        cursor = settings_db.cursor()
+                        cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (button_interaction.user.id,))
+                        admin_result = cursor.fetchone()
+
+                        if not admin_result:
+                            await button_interaction.response.send_message(
+                                "❌ You do not have permission to use this command.",
+                                ephemeral=True
+                            )
+                            return
+
+                        is_initial = admin_result[0]
+
+                    alliances, special_alliances, is_global = await self.cog.get_admin_alliances(
+                        button_interaction.user.id,
+                        button_interaction.guild_id
+                    )
+
+                    if not alliances:
+                        await button_interaction.response.send_message(
+                            "❌ No alliance found that you have permission for.",
+                            ephemeral=True
+                        )
+                        return
+
+                    special_alliance_text = ""
+                    if special_alliances:
+                        special_alliance_text = "\n\n**Special Access Alliances**\n"
+                        special_alliance_text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        for _, name in special_alliances:
+                            special_alliance_text += f"🔸 {name}\n"
+                        special_alliance_text += "━━━━━━━━━━━━━━━━━━━━━━"
+
+                    select_embed = discord.Embed(
+                        title="🟢 Alliance Selection - Activity Tracker",
+                        description=(
+                            "Please select an alliance to manage activity status:\n\n"
+                            "**Permission Details**\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 **Access Level:** `{'Global Admin' if is_initial == 1 else 'Server Admin'}`\n"
+                            f"🔍 **Access Type:** `{'All Alliances' if is_initial == 1 else 'Server + Special Access'}`\n"
+                            f"📊 **Available Alliances:** `{len(alliances)}`\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━"
+                            f"{special_alliance_text}"
+                        ),
+                        color=discord.Color.green()
+                    )
+
+                    alliances_with_counts = []
+                    for alliance_id, name in alliances:
+                        with sqlite3.connect('db/users.sqlite') as users_db:
+                            cursor = users_db.cursor()
+                            cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                            member_count = cursor.fetchone()[0]
+                            alliances_with_counts.append((alliance_id, name, member_count))
+
+                    view = AllianceSelectView(alliances_with_counts, self.cog)
+
+                    async def select_callback(interaction: discord.Interaction):
+                        alliance_id = int(view.current_select.values[0])
+                        await self.cog.show_activity_tracker(interaction, alliance_id)
+
+                    view.callback = select_callback
+                    await button_interaction.response.send_message(
+                        embed=select_embed,
+                        view=view,
+                        ephemeral=True
+                    )
+
+                except Exception as e:
+                    self.cog.log_message(f"Error in activity_tracker_button: {e}")
+                    if not button_interaction.response.is_done():
+                        await button_interaction.response.send_message(
+                            "❌ An error occurred while opening the activity tracker.",
                             ephemeral=True
                         )
 
@@ -1415,9 +1682,9 @@ class AllianceMemberOperations(commands.Cog):
                         if nickname:
                             try: # Since we pre-filtered, this ID should not exist in database
                                 self.c_users.execute("""
-                                    INSERT INTO users (fid, nickname, furnace_lv, kid, stove_lv_content, alliance)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                """, (fid, nickname, furnace_lv, kid, stove_lv_content, alliance_id))
+                                    INSERT INTO users (fid, nickname, furnace_lv, kid, stove_lv_content, alliance, last_seen_ts, active_override)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (fid, nickname, furnace_lv, kid, stove_lv_content, alliance_id, int(time.time()), None))
                                 self.conn_users.commit()
                                 
                                 with open(self.log_file, 'a', encoding='utf-8') as f:
@@ -2005,6 +2272,30 @@ class AllianceSelectView(discord.ui.View):
                 ephemeral=True
             )
 
+
+class ActivityTrackerView(discord.ui.View):
+    def __init__(self, cog, alliance_id: int, alliance_name: str):
+        super().__init__(timeout=7200)
+        self.cog = cog
+        self.alliance_id = alliance_id
+        self.alliance_name = alliance_name
+
+    @discord.ui.button(label="Mark Active", emoji="✅", style=discord.ButtonStyle.success, row=0)
+    async def mark_active(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._show_activity_member_select(interaction, self.alliance_id, self.alliance_name, "active")
+
+    @discord.ui.button(label="Mark Inactive", emoji="❌", style=discord.ButtonStyle.danger, row=0)
+    async def mark_inactive(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._show_activity_member_select(interaction, self.alliance_id, self.alliance_name, "inactive")
+
+    @discord.ui.button(label="Clear Override", emoji="🧹", style=discord.ButtonStyle.secondary, row=1)
+    async def clear_override(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._show_activity_member_select(interaction, self.alliance_id, self.alliance_name, "clear")
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_activity_tracker(interaction, self.alliance_id)
+
 class IDSearchModal(discord.ui.Modal):
     def __init__(self, selected_alliance_id=None, alliances=None, callback=None, context="transfer", cog=None):
         super().__init__(title="Search Members with ID")
@@ -2552,7 +2843,19 @@ class ExportFormatSelectView(discord.ui.View):
         )
 
 class MemberSelectView(discord.ui.View):
-    def __init__(self, members, source_alliance_name, cog, page=0, is_remove_operation=False, alliance_id=None, alliances=None):
+    def __init__(
+        self,
+        members,
+        source_alliance_name,
+        cog,
+        page=0,
+        is_remove_operation=False,
+        alliance_id=None,
+        alliances=None,
+        placeholder_text=None,
+        process_label=None,
+        context_label=None,
+    ):
         super().__init__(timeout=7200)
         self.members = members
         self.source_alliance_name = source_alliance_name
@@ -2567,6 +2870,8 @@ class MemberSelectView(discord.ui.View):
         self.is_remove_operation = is_remove_operation
         self.context = "remove" if is_remove_operation else "transfer"
         self.pending_selections = set()  # Track selected FIDs across pages
+        self.placeholder_text = placeholder_text
+        self.context_label = context_label
 
         # Remove "Delete All" button if not in remove operation mode
         if not is_remove_operation:
@@ -2574,6 +2879,8 @@ class MemberSelectView(discord.ui.View):
 
         self.update_select_menu()
         self.update_action_buttons()
+        if process_label and hasattr(self, "_process_button"):
+            self._process_button.label = process_label
 
     def update_select_menu(self):
         for item in self.children[:]:
@@ -2599,7 +2906,12 @@ class MemberSelectView(discord.ui.View):
             ))
 
         # Determine placeholder based on context (remove vs transfer)
-        if self.is_remove_operation:
+        if self.placeholder_text:
+            placeholder_text = self.placeholder_text.format(
+                page=self.page + 1,
+                max_page=self.max_page + 1
+            )
+        elif self.is_remove_operation:
             placeholder_text = f"👥 Select members to remove (Page {self.page + 1}/{self.max_page + 1})"
         else:
             placeholder_text = f"👥 Select members to transfer (Page {self.page + 1}/{self.max_page + 1})"
@@ -2662,6 +2974,8 @@ class MemberSelectView(discord.ui.View):
         selection_text = ""
         if self.pending_selections:
             selection_text = f"\n\n**📌 Selected: {len(self.pending_selections)} member(s)**"
+        if self.context_label:
+            selection_text += f"\n\n**Action:** {self.context_label}"
 
         embed = discord.Embed(
             title=f"👥 {self.source_alliance_name} - Member Selection",

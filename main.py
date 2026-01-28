@@ -1090,6 +1090,14 @@ if __name__ == "__main__":
                 stove_lv_content TEXT, 
                 alliance TEXT
             )""")
+            try:
+                conn_users.execute("ALTER TABLE users ADD COLUMN last_seen_ts INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn_users.execute("ALTER TABLE users ADD COLUMN active_override INTEGER")
+            except sqlite3.OperationalError:
+                pass
 
         with connections["conn_giftcode"] as conn_giftcode:
             conn_giftcode.execute("""CREATE TABLE IF NOT EXISTS gift_codes (
