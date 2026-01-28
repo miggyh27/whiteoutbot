@@ -849,7 +849,17 @@ class GiftOperations(commands.Cog):
     async def on_message(self, message: discord.Message):
         log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
         try:
-            if message.author.bot or not message.guild:
+            if not message.guild:
+                return
+
+            # Allow webhook/bot posts in configured gift code channels, but ignore our own bot.
+            if message.author.bot:
+                if message.author.id != self.bot.user.id:
+                    self.cursor.execute("SELECT 1 FROM giftcode_channel WHERE channel_id = ?", (message.channel.id,))
+                    if not self.cursor.fetchone():
+                        return
+                else:
+                    return
                 return
 
             self.cursor.execute("SELECT alliance_id FROM giftcode_channel WHERE channel_id = ?", (message.channel.id,))
@@ -4917,13 +4927,19 @@ class CreateGiftCodeModal(discord.ui.Modal):
                 
                 if hasattr(self.cog, 'api') and self.cog.api:
                     asyncio.create_task(self.cog.api.add_giftcode(code))
-                
+
+                try:
+                    await self.cog._process_auto_use(code)
+                    logger.info(f"[CreateGiftCodeModal] Auto-redemption queued for code '{code}'.")
+                except Exception as auto_err:
+                    logger.exception(f"[CreateGiftCodeModal] Auto-redemption queue error for '{code}': {auto_err}")
+
                 final_embed.title = "✅ Gift Code Validated"
                 final_embed.description = (
                     f"**Gift Code Details**\n━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🎁 **Gift Code:** `{code}`\n"
                     f"✅ **Status:** {validation_msg}\n"
-                    f"📝 **Action:** Added to database and sent to API\n"
+                    f"📝 **Action:** Added to database and queued for auto-redemption\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 )
                 final_embed.color = discord.Color.green()
