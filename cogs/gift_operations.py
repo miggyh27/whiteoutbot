@@ -2334,6 +2334,13 @@ class GiftOperations(commands.Cog):
                     f"Captcha fetch non-200 for ID {player_id}: status={status_code}, body='{snippet}'"
                 )
 
+                # WOS intermittently rate-limits captcha fetches with HTTP 429 and a JSON body like:
+                # {"message": "Too Many Attempts."}
+                # Treat this as a "too frequent" condition so callers can apply a longer cooldown
+                # rather than hammering retries every 1-2 seconds.
+                if status_code == 429:
+                    return None, "CAPTCHA_TOO_FREQUENT"
+
             return None, "CAPTCHA_FETCH_ERROR"
         except Exception as e:
             self.logger.exception(f"Error fetching captcha: {e}")
@@ -4392,13 +4399,52 @@ class GiftOperations(commands.Cog):
             error_summary = {}
             
             # Initial Setup (Get channel, alliance name)
-            self.alliance_cursor.execute("SELECT channel_id FROM alliancesettings WHERE alliance_id = ?", (alliance_id,))
+            # Prefer the alliance's configured operations channel, but fall back to the gift-code
+            # channel if alliance settings were never configured.
+            channel_source = "alliancesettings"
+            self.alliance_cursor.execute(
+                "SELECT channel_id FROM alliancesettings WHERE alliance_id = ?",
+                (alliance_id,),
+            )
             channel_result = self.alliance_cursor.fetchone()
+            if not channel_result:
+                channel_source = "giftcode_channel"
+                self.cursor.execute(
+                    "SELECT channel_id FROM giftcode_channel WHERE alliance_id = ?",
+                    (alliance_id,),
+                )
+                channel_result = self.cursor.fetchone()
+
             self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
             name_result = self.alliance_cursor.fetchone()
 
             if not channel_result or not name_result:
                 self.logger.error(f"GiftOps: Could not find channel or name for alliance {alliance_id}.")
+                try:
+                    missing_bits = []
+                    if not name_result:
+                        missing_bits.append("alliance name (alliance_list)")
+                    if not channel_result:
+                        missing_bits.append("alliance channel (alliancesettings or giftcode_channel)")
+                    missing_desc = ", ".join(missing_bits) if missing_bits else "unknown configuration"
+
+                    embed = discord.Embed(
+                        title="❌ Auto-Redemption Skipped (Missing Configuration)",
+                        description=(
+                            f"Gift code redemption was queued, but the bot is missing required configuration.\n\n"
+                            f"**Alliance ID:** `{alliance_id}`\n"
+                            f"**Gift Code:** `{giftcode}`\n"
+                            f"**Missing:** {missing_desc}\n\n"
+                            f"**Fix:** Run `/settings` and ensure the alliance is created and has a channel assigned.\n"
+                            f"Then ensure Gift Codes are configured under Gift Code Operations."
+                        ),
+                        color=discord.Color.red(),
+                        timestamp=datetime.now(),
+                    )
+                    await self._notify_admins(embed)
+                except Exception:
+                    # Best-effort notice; don't break queue processing if Discord sends fail.
+                    pass
                 return False
             
             channel_id, alliance_name = channel_result[0], name_result[0]
@@ -4406,6 +4452,23 @@ class GiftOperations(commands.Cog):
 
             if not channel:
                 self.logger.error(f"GiftOps: Bot cannot access channel {channel_id} for alliance {alliance_name}.")
+                try:
+                    embed = discord.Embed(
+                        title="❌ Auto-Redemption Skipped (Channel Not Accessible)",
+                        description=(
+                            f"The bot attempted to redeem a gift code, but cannot access the configured channel.\n\n"
+                            f"**Alliance:** `{alliance_name}` (`{alliance_id}`)\n"
+                            f"**Gift Code:** `{giftcode}`\n"
+                            f"**Channel ID:** `{channel_id}` (from `{channel_source}`)\n\n"
+                            f"**Fix:** Confirm the channel still exists and the bot can view/send messages there.\n"
+                            f"If needed, reassign the alliance channel via `/settings`."
+                        ),
+                        color=discord.Color.red(),
+                        timestamp=datetime.now(),
+                    )
+                    await self._notify_admins(embed)
+                except Exception:
+                    pass
                 return False
 
             # Check if OCR is enabled
@@ -4419,8 +4482,12 @@ class GiftOperations(commands.Cog):
                     description=(
                         f"**Gift Code:** `{giftcode}`\n"
                         f"**Alliance:** `{alliance_name}`\n\n"
-                        f"⚠️ Gift code redemption requires the OCR/captcha solver to be enabled.\n"
-                        f"Please enable it first using the settings command."
+                        f"⚠️ Auto-redemption requires the CAPTCHA solver to be enabled and initialized.\n\n"
+                        f"**How to enable:**\n"
+                        f"1) Run `/settings`\n"
+                        f"2) Open **Gift Code Operations**\n"
+                        f"3) Open **Settings**\n"
+                        f"4) Open **CAPTCHA Settings** and turn **OCR Enabled** on\n"
                     ),
                     color=discord.Color.red()
                 )

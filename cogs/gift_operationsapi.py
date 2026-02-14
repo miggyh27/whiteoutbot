@@ -403,12 +403,15 @@ class GiftCodeAPI:
                                                     color=embed_color
                                                 )
 
+                                                # Notify admins, but do not return early: we still need to queue
+                                                # auto-redemption and notify gift channels below.
+                                                sent_admin_notice = False
                                                 if self.admin_channel_id:
                                                     channel = self.bot.get_channel(self.admin_channel_id)
                                                     if channel:
                                                         try:
                                                             await channel.send(embed=admin_embed)
-                                                            return
+                                                            sent_admin_notice = True
                                                         except Exception as e:
                                                             self.logger.exception(
                                                                 f"Error sending admin notice to channel {self.admin_channel_id}: {e}"
@@ -418,7 +421,9 @@ class GiftCodeAPI:
                                                             f"Admin channel {self.admin_channel_id} not found"
                                                         )
 
-                                                if not self.admin_channel_id:
+                                                # Fallback to DM if no admin channel was configured or if sending
+                                                # to the admin channel failed.
+                                                if (not self.admin_channel_id) or (not sent_admin_notice):
                                                     for admin_id in admin_ids:
                                                         try:
                                                             admin_user = await self.bot.fetch_user(admin_id[0])
