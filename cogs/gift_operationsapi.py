@@ -165,7 +165,8 @@ class GiftCodeAPI:
             backoff *= random.uniform(1.0, 1.5)
             self.current_backoff = min(self.current_backoff * 2, self.max_backoff_time)
             return backoff
-        elif response.status in [502, 503, 504]: # Server errors - back off with increasing delay
+        elif response.status in [502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530]:
+            # Server/edge errors (including Cloudflare 52x/53x) - back off with increasing delay
             self.logger.warning(f"Server error: {response.status}")
             backoff = self.current_backoff * random.uniform(0.75, 1.25)
             self.current_backoff = min(self.current_backoff * 2, self.max_backoff_time)

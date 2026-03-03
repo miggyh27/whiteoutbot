@@ -362,8 +362,15 @@ class GiftOperations(commands.Cog):
 
         # Handle redemption
         if operation_type == 'redemption':
+            if not alliance_id:
+                self.logger.error(
+                    f"Redemption queue item missing alliance_id for gift code '{giftcode}' (source: {source})"
+                )
+                return
+
             if alliance_id:
                 try:
+                    alliance_name = f"Alliance {alliance_id}"
                     # Get alliance name
                     self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
                     alliance_result = self.alliance_cursor.fetchone()
@@ -434,6 +441,7 @@ class GiftOperations(commands.Cog):
                             pass
                 except Exception as e:
                     self.logger.exception(f"Error in manual redemption for alliance {alliance_id}: {e}")
+                    alliance_name_safe = alliance_name if 'alliance_name' in locals() else f"Alliance {alliance_id}"
 
                     # Handle batch error update
                     if batch_id and batch_id in self.redemption_batches:
@@ -458,7 +466,7 @@ class GiftOperations(commands.Cog):
                     elif interaction:
                         error_embed = discord.Embed(
                             title="❌ Redemption Error",
-                            description=f"An error occurred during redemption for **{alliance_name}**: {str(e)}",
+                            description=f"An error occurred during redemption for **{alliance_name_safe}**: {str(e)}",
                             color=discord.Color.red()
                         )
                         if progress_message:
@@ -2095,7 +2103,8 @@ class GiftOperations(commands.Cog):
         try:
             # Calculate the cutoff date (7 days ago)
             from datetime import datetime, timedelta
-            cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
+            # gift_codes.date is stored as YYYY-MM-DD; keep comparison format consistent.
+            cutoff_date = (datetime.now() - timedelta(days=7)).date().isoformat()
             
             # Get count of codes that will be deleted for logging
             self.cursor.execute("""
