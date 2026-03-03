@@ -19,6 +19,7 @@ from .alliance_member_operations import AllianceSelectView
 from .alliance import PaginatedChannelView
 from .gift_operationsapi import GiftCodeAPI
 from .gift_captchasolver import GiftCaptchaSolver
+from .browser_headers import get_headers
 from collections import deque
 from wos_config import get_admin_channel_id, get_ssl_context, get_wos_secret
 
@@ -386,7 +387,7 @@ class GiftOperations(commands.Cog):
                         progress_message = await interaction.followup.send(embed=start_embed, ephemeral=True)
 
                     # Execute the redemption
-                    await self.use_giftcode_for_alliance(alliance_id, giftcode)
+                    redemption_ok = await self.use_giftcode_for_alliance(alliance_id, giftcode)
 
                     # Handle batch completion update
                     if batch_id and batch_id in self.redemption_batches:
@@ -397,9 +398,9 @@ class GiftOperations(commands.Cog):
                         batch['alliances'][alliance_id]['codes_completed'] = batch['alliances'][alliance_id].get('codes_completed', 0) + 1
                         codes_done = batch['alliances'][alliance_id]['codes_completed']
 
-                        # Mark alliance as completed only when all codes are done for it
+                        # Mark alliance status only when all codes are done for it
                         if codes_done >= total_codes:
-                            batch['alliances'][alliance_id]['status'] = 'completed'
+                            batch['alliances'][alliance_id]['status'] = 'completed' if redemption_ok else 'error'
                         else:
                             batch['alliances'][alliance_id]['status'] = 'processing'
 
@@ -412,15 +413,24 @@ class GiftOperations(commands.Cog):
 
                     # Update the message with completion status if we have a message to update (non-batch)
                     elif interaction and progress_message:
-                        complete_embed = discord.Embed(
-                            title="✅ Redemption Complete",
-                            description=f"Gift code redemption completed for **{alliance_name}**.\n"
-                                       f"**Gift Code:** `{giftcode}`",
-                            color=discord.Color.green()
-                        )
+                        if redemption_ok:
+                            result_embed = discord.Embed(
+                                title="✅ Redemption Complete",
+                                description=f"Gift code redemption completed for **{alliance_name}**.\n"
+                                           f"**Gift Code:** `{giftcode}`",
+                                color=discord.Color.green()
+                            )
+                        else:
+                            result_embed = discord.Embed(
+                                title="⚠️ Redemption Skipped/Failed",
+                                description=f"Gift code redemption could not complete for **{alliance_name}**.\n"
+                                           f"**Gift Code:** `{giftcode}`\n"
+                                           f"Check bot logs for details.",
+                                color=discord.Color.orange()
+                            )
                         try:
-                            await progress_message.edit(embed=complete_embed)
-                        except:
+                            await progress_message.edit(embed=result_embed)
+                        except Exception:
                             pass
                 except Exception as e:
                     self.logger.exception(f"Error in manual redemption for alliance {alliance_id}: {e}")
@@ -1487,11 +1497,7 @@ class GiftOperations(commands.Cog):
         return None, str(last_error) if last_error else "Unknown error"
 
     async def get_stove_info_wos(self, session, player_id):
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "content-type": "application/x-www-form-urlencoded",
-            "origin": self.wos_giftcode_redemption_url,
-        }
+        headers = get_headers(self.wos_giftcode_redemption_url)
 
         data_to_encode = {
             "fid": f"{player_id}",
@@ -1575,11 +1581,7 @@ class GiftOperations(commands.Cog):
             self.logger.info(f"GiftOps: OCR solved for {player_id}: {captcha_code} (method:{method}, conf:{confidence:.2f}, attempt:{attempt+1})")
             
             # Submit gift code with solved captcha
-            headers = {
-                "accept": "application/json, text/plain, */*",
-                "content-type": "application/x-www-form-urlencoded",
-                "origin": self.wos_giftcode_redemption_url,
-            }
+            headers = get_headers(self.wos_giftcode_redemption_url)
             data_to_encode = {
                 "fid": f"{player_id}",
                 "cdk": giftcode,
@@ -2292,11 +2294,7 @@ class GiftOperations(commands.Cog):
         else:
             created_session = False
             
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "content-type": "application/x-www-form-urlencoded",
-            "origin": self.wos_giftcode_redemption_url,
-        }
+        headers = get_headers(self.wos_giftcode_redemption_url)
         
         data_to_encode = {
             "fid": player_id,
