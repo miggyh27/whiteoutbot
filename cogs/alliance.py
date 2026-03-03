@@ -109,13 +109,19 @@ class Alliance(commands.Cog):
     @app_commands.command(name="settings", description="Open settings menu.")
     async def settings(self, interaction: discord.Interaction):
         try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+
             if interaction.guild is not None: # Check bot permissions only if in a guild
                 perm_check = interaction.guild.get_member(interaction.client.user.id)
-                if not perm_check.guild_permissions.administrator:
-                    await interaction.response.send_message(
+                if not perm_check or not perm_check.guild_permissions.administrator:
+                    await interaction.edit_original_response(
+                        content=(
                         "Beeb boop 🤖 I need **Administrator** permissions to function. "
-                        "Go to server settings --> Roles --> find my role --> scroll down and turn on Administrator", 
-                        ephemeral=True
+                        "Go to server settings --> Roles --> find my role --> scroll down and turn on Administrator"
+                        ),
+                        embed=None,
+                        view=None
                     )
                     return
                 
@@ -139,9 +145,10 @@ class Alliance(commands.Cog):
                         return
 
                 if bootstrap_admins and user_id not in bootstrap_admins:
-                    await interaction.response.send_message(
-                        "❌ This server requires a pre-approved Global Admin.",
-                        ephemeral=True
+                    await interaction.edit_original_response(
+                        content="❌ This server requires a pre-approved Global Admin.",
+                        embed=None,
+                        view=None
                     )
                     return
 
@@ -160,7 +167,7 @@ class Alliance(commands.Cog):
                     ),
                     color=discord.Color.green()
                 )
-                await interaction.response.send_message(embed=first_use_embed, ephemeral=True)
+                await interaction.edit_original_response(content=None, embed=first_use_embed, view=None)
                 
                 await asyncio.sleep(3)
                 
@@ -168,9 +175,10 @@ class Alliance(commands.Cog):
             admin = self.c_settings.fetchone()
 
             if admin is None:
-                await interaction.response.send_message(
-                    "You do not have permission to access this menu.", 
-                    ephemeral=True
+                await interaction.edit_original_response(
+                    content="You do not have permission to access this menu.",
+                    embed=None,
+                    view=None
                 )
                 return
 
@@ -248,10 +256,7 @@ class Alliance(commands.Cog):
                 row=3
             ))
 
-            if admin_count == 0:
-                await interaction.edit_original_response(embed=embed, view=view)
-            else:
-                await interaction.response.send_message(embed=embed, view=view)
+            await interaction.edit_original_response(content=None, embed=embed, view=view)
 
         except Exception as e:
             if not any(error_code in str(e) for error_code in ["10062", "40060"]):
@@ -260,7 +265,10 @@ class Alliance(commands.Cog):
             if not interaction.response.is_done():
                 await interaction.response.send_message(error_message, ephemeral=True)
             else:
-                await interaction.followup.send(error_message, ephemeral=True)
+                try:
+                    await interaction.edit_original_response(content=error_message, embed=None, view=None)
+                except Exception:
+                    await interaction.followup.send(error_message, ephemeral=True)
 
     async def show_main_menu(self, interaction: discord.Interaction):
         """Display the main settings menu - can be called by other cogs"""
