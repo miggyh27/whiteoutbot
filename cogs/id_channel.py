@@ -9,6 +9,7 @@ import hashlib
 import aiohttp
 from discord.ext import tasks
 from wos_config import get_ssl_context, get_wos_secret
+from .browser_headers import get_headers
 
 SECRET = get_wos_secret()
 
@@ -202,7 +203,7 @@ class IDChannel(commands.Cog):
                     form = f"fid={fid}&time={current_time}"
                     sign = hashlib.md5((form + SECRET).encode('utf-8')).hexdigest()
                     form = f"sign={sign}&{form}"
-                    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+                    headers = get_headers("https://wos-giftcode-api.centurygame.com")
 
                     ssl_context = get_ssl_context()
 

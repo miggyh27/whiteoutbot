@@ -7,6 +7,7 @@ import hashlib
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from wos_config import get_ssl_context, get_wos_secret
+from .browser_headers import get_headers
 
 SECRET = get_wos_secret()
 
@@ -745,7 +746,7 @@ class MinisterMenu(commands.Cog):
 
     async def fetch_user_data(self, fid, proxy=None):
         url = 'https://wos-giftcode-api.centurygame.com/api/player'
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        headers = get_headers("https://wos-giftcode-api.centurygame.com")
         current_time = int(time.time() * 1000)
         form = f"fid={fid}&time={current_time}"
         sign = hashlib.md5((form + SECRET).encode('utf-8')).hexdigest()

@@ -6,6 +6,7 @@ import time
 import asyncio
 import sqlite3
 from wos_config import get_ssl_context, get_wos_secret
+from .browser_headers import get_headers
 
 class WCommand(commands.Cog):
     def __init__(self, bot):
@@ -71,7 +72,7 @@ class WCommand(commands.Cog):
             form = f"sign={sign}&{form}"
 
             url = 'https://wos-giftcode-api.centurygame.com/api/player'
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+            headers = get_headers("https://wos-giftcode-api.centurygame.com")
             ssl_context = get_ssl_context()
 
             max_retries = 3
