@@ -4398,6 +4398,8 @@ class GiftOperations(commands.Cog):
         API_RATE_LIMIT_COOLDOWN = 60.0
         CAPTCHA_CYCLE_COOLDOWN = 60.0
         MAX_RETRY_CYCLES = 10
+        LOGIN_RETRY_COOLDOWN = 30.0
+        MAX_LOGIN_RETRY_CYCLES = 3
 
         self.logger.info(f"\nGiftOps: Starting use_giftcode_for_alliance for Alliance {alliance_id}, Code {giftcode}")
 
@@ -4783,7 +4785,19 @@ class GiftOperations(commands.Cog):
                     mark_processed = True
                     fail_reason = f"Solver Error ({response_status})"
                     error_summary["CAPTCHA_SOLVER_ERROR"] = error_summary.get("CAPTCHA_SOLVER_ERROR", 0) + 1
-                elif response_status in ["LOGIN_FAILED", "LOGIN_EXPIRED_MID_PROCESS", "ERROR", "UNKNOWN_API_RESPONSE"]:
+                elif response_status in ["LOGIN_FAILED", "LOGIN_EXPIRED_MID_PROCESS"]:
+                    if current_cycle_count + 1 < MAX_LOGIN_RETRY_CYCLES:
+                        queue_for_retry = True
+                        retry_delay = LOGIN_RETRY_COOLDOWN
+                        fail_reason = f"Login Error ({response_status})"
+                        self.logger.info(f"GiftOps: ID {fid} got {response_status} on cycle {current_cycle_count + 1}. Queuing for login retry in {retry_delay}s.")
+                    else:
+                        add_to_failed = True
+                        mark_processed = True
+                        fail_reason = f"Login Failed after {MAX_LOGIN_RETRY_CYCLES} retries ({response_status})"
+                        self.logger.info(f"GiftOps: Max login retries ({MAX_LOGIN_RETRY_CYCLES}) reached for ID {fid}. Marking as failed.")
+                        error_summary[response_status] = error_summary.get(response_status, 0) + 1
+                elif response_status in ["ERROR", "UNKNOWN_API_RESPONSE"]:
                     add_to_failed = True
                     mark_processed = True
                     fail_reason = f"Processing Error ({response_status})"
@@ -4845,7 +4859,8 @@ class GiftOperations(commands.Cog):
                 
                 if queue_for_retry:
                     retry_after_ts = time.time() + retry_delay
-                    cycle_for_next_retry = current_cycle_count + 1 if response_status in ["CAPTCHA_INVALID", "MAX_CAPTCHA_ATTEMPTS_REACHED", "OCR_FAILED_ATTEMPT"] else current_cycle_count
+                    increments_cycle = ["CAPTCHA_INVALID", "MAX_CAPTCHA_ATTEMPTS_REACHED", "OCR_FAILED_ATTEMPT", "LOGIN_FAILED", "LOGIN_EXPIRED_MID_PROCESS"]
+                    cycle_for_next_retry = current_cycle_count + 1 if response_status in increments_cycle else current_cycle_count
                     retry_queue.append((fid, nickname, cycle_for_next_retry, retry_after_ts))
                 
                 # Batch process results when reaching batch size
